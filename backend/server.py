@@ -39,6 +39,13 @@ class SearchRequest(BaseModel):
     query: str
     location: Optional[str] = None
 
+class StructuredQuery(BaseModel):
+    product: str
+    category: Literal["groceries", "electronics", "clothing", "medicine", "hardware", "general"]
+    location: str
+    intent: Literal["cheapest", "fastest", "best_value", "nearest"]
+    raw_query: str
+
 class SearchResult(BaseModel):
     id: str
     rank: int
@@ -58,7 +65,7 @@ class SearchResponse(BaseModel):
     online_count: int
     offline_count: int
     search_time: float
-    parsed_intent: dict
+    parsed_query: StructuredQuery
 
 # Mock data generators
 ONLINE_PLATFORMS = [
@@ -137,50 +144,79 @@ def generate_mock_offline_results(product: str, category: str, location: str, co
     
     return results
 
-async def parse_query_with_openai(query: str, location: Optional[str]) -> dict:
-    """Parse user query using OpenAI to extract product, category, location, and intent"""
-    try:
-        api_key = os.environ.get('EMERGENT_LLM_KEY')
-        
-        system_message = """You are a query parser for a price comparison engine in India. 
-        Extract the following information from the user's query:
-        - product: the main product name
-        - category: the product category (electronics, groceries, fashion, etc.)
-        - intent: one of [cheapest, fastest, nearest, best_value]
-        - location: the location mentioned (or use the provided location parameter)
-        
-        Return ONLY a valid JSON object with these exact keys. No additional text.
-        Example: {"product": "iPhone 15", "category": "electronics", "intent": "cheapest", "location": "Koramangala"}
-        """
-        
-        chat = LlmChat(
-            api_key=api_key,
-            session_id=str(uuid.uuid4()),
-            system_message=system_message
-        ).with_model("openai", "gpt-4o-mini")
-        
-        user_message = UserMessage(
-            text=f"Query: {query}\nProvided Location: {location or 'Not provided'}"
-        )
-        
-        response = await chat.send_message(user_message)
-        
-        # Parse the JSON response
-        import json
-        parsed = json.loads(response)
-        
-        logger.info(f"Parsed query: {parsed}")
-        return parsed
-        
-    except Exception as e:
-        logger.error(f"Error parsing query with OpenAI: {e}")
-        # Fallback to basic parsing
-        return {
-            "product": query.split()[0] if query else "product",
-            "category": "general",
-            "intent": "cheapest",
-            "location": location or "India"
-        }
+async def parse_query_with_openai(query: str, location: Optional[str]) -> StructuredQuery:
+    """Parse user query using OpenAI to extract product, category, location, and intent with retry logic"""
+    api_key = os.environ.get('EMERGENT_LLM_KEY')
+    
+    system_message = """You are a query structuring assistant. Convert the user's natural language shopping query into a structured JSON object. Return ONLY valid JSON with these fields:
+- product: the specific item (string)
+- category: one of groceries, electronics, clothing, medicine, hardware, general (string)
+- location: city or area mentioned, or unknown (string)
+- intent: one of cheapest, fastest, best_value, nearest — infer from context (string)
+- raw_query: the original query verbatim (string)
+
+Examples:
+Query: "cheap tomatoes in Rajkot"
+{"product": "tomatoes", "category": "groceries", "location": "Rajkot", "intent": "cheapest", "raw_query": "cheap tomatoes in Rajkot"}
+
+Query: "fastest delivery iPhone 15 Bangalore"
+{"product": "iPhone 15", "category": "electronics", "location": "Bangalore", "intent": "fastest", "raw_query": "fastest delivery iPhone 15 Bangalore"}
+
+Return ONLY the JSON object, no additional text."""
+    
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            chat = LlmChat(
+                api_key=api_key,
+                session_id=str(uuid.uuid4()),
+                system_message=system_message
+            ).with_model("openai", "gpt-4o-mini")
+            
+            user_message = UserMessage(
+                text=f"Query: {query}\nProvided Location Parameter: {location or 'Not provided'}"
+            )
+            
+            response = await chat.send_message(user_message)
+            
+            # Parse the JSON response
+            import json
+            parsed = json.loads(response.strip())
+            
+            # Override location if explicitly provided
+            if location:
+                parsed['location'] = location
+            
+            # Ensure raw_query is set
+            if 'raw_query' not in parsed:
+                parsed['raw_query'] = query
+            
+            # Create and validate StructuredQuery
+            structured_query = StructuredQuery(**parsed)
+            
+            logger.info(f"Successfully parsed query (attempt {attempt + 1}): {structured_query.model_dump()}")
+            return structured_query
+            
+        except json.JSONDecodeError as e:
+            logger.warning(f"JSON parsing failed (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                # Last attempt failed, use fallback
+                logger.error("All parsing attempts failed, using fallback")
+                break
+        except Exception as e:
+            logger.error(f"Error parsing query with OpenAI (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt == max_retries - 1:
+                break
+    
+    # Fallback: Use raw query as product name
+    logger.info("Using fallback parsing")
+    return StructuredQuery(
+        product=query,
+        category="general",
+        location=location or "unknown",
+        intent="cheapest",
+        raw_query=query
+    )
 
 @api_router.post("/search", response_model=SearchResponse)
 async def search_products(request: SearchRequest):
@@ -188,29 +224,28 @@ async def search_products(request: SearchRequest):
     start_time = asyncio.get_event_loop().time()
     
     try:
-        # Step 1: Parse query with OpenAI
-        parsed_intent = await parse_query_with_openai(request.query, request.location)
+        # Step 1: Parse query with OpenAI (with retry and fallback)
+        structured_query = await parse_query_with_openai(request.query, request.location)
         
         # Step 2: Generate mock online results
         online_results = generate_mock_online_results(
-            parsed_intent.get("product", "product"),
-            parsed_intent.get("category", "general"),
+            structured_query.product,
+            structured_query.category,
             count=random.randint(4, 7)
         )
         
         # Step 3: Generate mock offline results
         offline_results = generate_mock_offline_results(
-            parsed_intent.get("product", "product"),
-            parsed_intent.get("category", "general"),
-            parsed_intent.get("location", request.location or "India"),
+            structured_query.product,
+            structured_query.category,
+            structured_query.location,
             count=random.randint(2, 4)
         )
         
-        # Step 4: Combine and rank results
+        # Step 4: Combine and rank results based on intent
         all_results = online_results + offline_results
         
-        # Sort by price (cheapest first) or by confidence for "best_value"
-        intent = parsed_intent.get("intent", "cheapest")
+        intent = structured_query.intent
         if intent == "cheapest":
             all_results.sort(key=lambda x: x["price"])
         elif intent == "fastest":
@@ -253,7 +288,7 @@ async def search_products(request: SearchRequest):
             online_count=len(online_results),
             offline_count=len(offline_results),
             search_time=search_time,
-            parsed_intent=parsed_intent
+            parsed_query=structured_query
         )
         
     except Exception as e:

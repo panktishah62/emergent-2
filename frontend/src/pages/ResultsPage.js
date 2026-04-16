@@ -145,6 +145,71 @@ const ResultsPage = () => {
             </div>
           </motion.div>
 
+          {/* Parsed Query Info */}
+          {searchData?.parsed_query && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 0.1 }}
+              className="px-6 py-4 rounded-2xl"
+              style={{
+                backgroundColor: 'rgba(19, 27, 47, 0.6)',
+                backdropFilter: 'blur(20px)',
+                borderWidth: '1px',
+                borderColor: 'rgba(255, 255, 255, 0.08)'
+              }}
+            >
+              <div className="flex flex-wrap items-center gap-3 text-sm">
+                <span style={{ color: '#8BA3CB', fontFamily: "'Inter', sans-serif" }}>
+                  Searching for:
+                </span>
+                <span 
+                  className="px-3 py-1 rounded-md font-semibold"
+                  style={{
+                    backgroundColor: 'rgba(0, 255, 136, 0.15)',
+                    color: '#00FF88',
+                    fontFamily: "'Inter', sans-serif"
+                  }}
+                >
+                  {searchData.parsed_query.product}
+                </span>
+                <span style={{ color: '#8BA3CB' }}>in</span>
+                <span 
+                  className="px-3 py-1 rounded-md"
+                  style={{
+                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                    color: '#8BA3CB',
+                    fontFamily: "'Inter', sans-serif"
+                  }}
+                >
+                  {searchData.parsed_query.category}
+                </span>
+                <span style={{ color: '#8BA3CB' }}>•</span>
+                <span 
+                  className="px-3 py-1 rounded-md"
+                  style={{
+                    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+                    color: '#8BA3CB',
+                    fontFamily: "'Inter', sans-serif"
+                  }}
+                >
+                  📍 {searchData.parsed_query.location}
+                </span>
+                <span style={{ color: '#8BA3CB' }}>•</span>
+                <span 
+                  className="px-3 py-1 rounded-md"
+                  style={{
+                    backgroundColor: 'rgba(0, 229, 255, 0.1)',
+                    color: '#00E5FF',
+                    fontFamily: "'Inter', sans-serif"
+                  }}
+                >
+                  Intent: {searchData.parsed_query.intent}
+                </span>
+              </div>
+            </motion.div>
+          )}
+
           {/* Summary Bar */}
           <motion.div
             initial={{ opacity: 0, y: -10 }}
