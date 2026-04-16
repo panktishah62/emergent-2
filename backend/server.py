@@ -881,7 +881,18 @@ async def run_offline_pipeline_safe(product: str, category: str, location: str) 
     - Wait for real call to complete or timeout before returning
     - Use transcript-derived data from real call
     - Fallback to mock if real call fails
+    - NEVER crashes — always returns results
     """
+    try:
+        return await _run_offline_pipeline_inner(product, category, location)
+    except Exception as e:
+        logger.error(f"CRITICAL: Offline pipeline crashed entirely: {e}", exc_info=True)
+        logger.error("Returning mock fallback results to keep app running")
+        return generate_mock_offline_results(product, category, location, count=5)
+
+
+async def _run_offline_pipeline_inner(product: str, category: str, location: str) -> List[dict]:
+    """Inner offline pipeline logic — wrapped by run_offline_pipeline_safe"""
     from voice_calling import VoiceCallingService
 
     # ── Configuration ──
@@ -958,9 +969,15 @@ async def run_offline_pipeline_safe(product: str, category: str, location: str) 
                 "notes": call_result.notes,
             }
             real_call_success = True
+        elif call_result.status == "completed" and call_result.price is None:
+            # Call completed but no price extracted from transcript
+            logger.warning(f"  CALL COMPLETED BUT NO PRICE — {ALWAYS_CALL_NAME}")
+            logger.warning(f"    Transcript: {(call_result.transcript or '')[:200]}")
+            logger.warning(f"    Falling back to mock for {ALWAYS_CALL_NAME}")
         else:
-            logger.warning(f"  CALL FAILED/INCOMPLETE — {ALWAYS_CALL_NAME} (status: {call_result.status})")
-            logger.warning(f"    Transcript: {call_result.transcript}")
+            logger.warning(f"  CALL {call_result.status.upper()} — {ALWAYS_CALL_NAME}")
+            if call_result.transcript:
+                logger.warning(f"    Transcript: {call_result.transcript[:200]}")
             logger.warning(f"    Falling back to mock for {ALWAYS_CALL_NAME}")
     except Exception as e:
         logger.error(f"  EXCEPTION during call to {ALWAYS_CALL_NAME}: {e}")
