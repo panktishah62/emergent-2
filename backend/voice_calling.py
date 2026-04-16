@@ -348,11 +348,15 @@ Example: {{"price": 15000, "availability": true, "negotiated": true, "delivery_t
         vendor_name: str,
         vendor_phone: str,
         product: str,
-        category: str
+        category: str,
+        max_wait: int = 120
     ) -> CallResult:
         """
         Complete flow: make call, wait for completion, extract data
         Returns CallResult with all extracted information
+        
+        Args:
+            max_wait: Maximum seconds to wait for call completion (default 120)
         """
         # MOCK MODE: Generate mock transcript
         if self.mock_mode:
@@ -391,8 +395,8 @@ Example: {{"price": 15000, "availability": true, "negotiated": true, "delivery_t
             
             call_id = call_data["call_id"]
             
-            # Step 2: Poll for completion
-            final_data = await self.poll_call_status(call_id)
+            # Step 2: Poll for completion with configurable timeout
+            final_data = await self.poll_call_status(call_id, max_wait=max_wait)
             
             status = final_data.get("status")
             transcript = final_data.get("concatenated_transcript")

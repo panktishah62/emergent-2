@@ -293,12 +293,22 @@ async def chat_message(request: ChatMessageRequest):
         except Exception as e:
             logger.error(f"Vendor discovery for chat failed: {e}")
 
-        # Build progress states — one per discovered vendor + online + ranking
+        # Build progress states — include PANKTI SHAH + discovered vendors + online + ranking
         progress_states = [
             {"stage": "Understanding your request", "status": "completed", "detail": f"Looking for {structured_query.product} in {structured_query.location}"},
             {"stage": "Searching online platforms", "status": "pending", "detail": "Checking Amazon, Flipkart, and more..."},
+            {"stage": "Calling PANKTI SHAH", "status": "pending", "detail": "+919106812406"},
         ]
-        for v in discovered_vendors:
+        # Add top discovered vendor as explicit call target
+        if discovered_vendors:
+            top_v = discovered_vendors[0]
+            progress_states.append({
+                "stage": f"Calling {top_v['name']}",
+                "status": "pending",
+                "detail": top_v.get("phone", ""),
+            })
+        # Add remaining vendors as "mocking" progress
+        for v in discovered_vendors[1:]:
             progress_states.append({
                 "stage": f"Contacting {v['name']}",
                 "status": "pending",
@@ -306,6 +316,13 @@ async def chat_message(request: ChatMessageRequest):
             })
         progress_states.append({"stage": "Negotiating best deals", "status": "pending", "detail": None})
         progress_states.append({"stage": "Comparing & ranking all results", "status": "pending", "detail": None})
+
+        # Also add PANKTI SHAH to discovered_vendors for frontend display
+        discovered_vendors.insert(0, {
+            "name": "PANKTI SHAH",
+            "phone": "+919106812406",
+            "address": "Direct contact",
+        })
 
         # Step 2: Run the actual search
         try:
@@ -740,118 +757,288 @@ async def search_products(request: SearchRequest):
 
 async def run_offline_pipeline_safe(product: str, category: str, location: str) -> List[dict]:
     """
-    Run offline pipeline with HYBRID + SEQUENTIAL approach:
-    - Make REAL Bland.ai calls to top 3 vendors SEQUENTIALLY (one at a time)
-    - Use MOCK data for remaining vendors
-    - Wait for each call to complete before starting next (avoids rate limits)
+    HYBRID 2-CALL OFFLINE PIPELINE:
+    - Always make exactly 2 real Bland.ai calls:
+      1. PANKTI SHAH at +919106812406 (fixed target)
+      2. Top discovered vendor from Google Places
+    - All other discovered vendors get mocked results
+    - Sequential calls, 45s timeout each, fallback to mock on failure
+    - Waits for both real calls before returning
     """
+    from voice_calling import VoiceCallingService
+
+    # ── Configuration ──
+    ALWAYS_CALL_NAME = "PANKTI SHAH"
+    ALWAYS_CALL_PHONE = "+919106812406"
+    REAL_CALL_TIMEOUT = 45   # seconds max wait per real call
+    DELAY_BETWEEN_CALLS = 5  # seconds between the 2 real calls
+
+    logger.info("=" * 70)
+    logger.info("OFFLINE PIPELINE: 2-CALL HYBRID MODE")
+    logger.info(f"  Product: {product} | Category: {category} | Location: {location}")
+    logger.info(f"  Fixed target: {ALWAYS_CALL_NAME} ({ALWAYS_CALL_PHONE})")
+    logger.info(f"  Timeout per call: {REAL_CALL_TIMEOUT}s")
+    logger.info("=" * 70)
+
+    # ── Step 1: Discover vendors via Google Places ──
+    discovered_vendors = []
     try:
-        # Discover vendors
         discovered_vendors = await discover_local_vendors_with_google_places(
             product, category, location
         )
-        
-        if not discovered_vendors:
-            logger.warning("No vendors discovered for offline pipeline")
-            return generate_mock_offline_results(product, category, location, count=3)
-        
-        # HYBRID APPROACH: Split vendors into real and mock
-        real_call_limit = 3  # Make real calls to top 3 vendors SEQUENTIALLY
-        vendors_for_real_calls = discovered_vendors[:real_call_limit]
-        vendors_for_mock = discovered_vendors[real_call_limit:]
-        
-        logger.info(
-            f"SEQUENTIAL HYBRID MODE: Real calls to {len(vendors_for_real_calls)} vendors "
-            f"(one at a time), mock data for {len(vendors_for_mock)} vendors"
+        logger.info(f"Discovered {len(discovered_vendors)} vendors from Google Places")
+    except Exception as e:
+        logger.error(f"Vendor discovery failed: {e}")
+
+    # ── Step 2: Select top real vendor (first discovered with a phone number) ──
+    top_vendor = None
+    remaining_vendors = []
+    for v in discovered_vendors:
+        if top_vendor is None and v.get("phone_number"):
+            top_vendor = v
+            logger.info(f"Selected top vendor for real call: {v['name']} ({v['phone_number']})")
+        else:
+            remaining_vendors.append(v)
+
+    if not top_vendor:
+        logger.warning("No discovered vendor with phone number — only PANKTI SHAH will get a real call")
+
+    # ── Step 3: Create voice calling service (real mode) ──
+    voice_service = VoiceCallingService(
+        bland_api_key=BLAND_API_KEY,
+        openai_api_key=EMERGENT_LLM_KEY,
+        mock_mode=False  # Real calls for these 2 targets
+    )
+
+    # Mock service for fallbacks
+    mock_service = VoiceCallingService(
+        bland_api_key=BLAND_API_KEY,
+        openai_api_key=EMERGENT_LLM_KEY,
+        mock_mode=True
+    )
+
+    real_results = []
+    real_call_count = 0
+    mock_fallback_count = 0
+
+    # ── Step 4: REAL CALL #1 — PANKTI SHAH ──
+    logger.info("-" * 50)
+    logger.info(f"REAL CALL #1: {ALWAYS_CALL_NAME} ({ALWAYS_CALL_PHONE})")
+    logger.info(f"  Starting call... (timeout: {REAL_CALL_TIMEOUT}s)")
+
+    try:
+        result_1 = await voice_service.call_vendor(
+            vendor_name=ALWAYS_CALL_NAME,
+            vendor_phone=ALWAYS_CALL_PHONE,
+            product=product,
+            category=category,
+            max_wait=REAL_CALL_TIMEOUT
         )
-        
-        # Make REAL SEQUENTIAL calls to top 3 vendors
-        real_results = []
-        if vendors_for_real_calls and not MOCK_VOICE_CALLS:
-            logger.info(
-                f"Making REAL Bland.ai calls SEQUENTIALLY to top {len(vendors_for_real_calls)} vendors "
-                f"(waiting for each to complete before next)..."
+
+        if result_1.status == "completed" and result_1.price is not None:
+            logger.info(f"  ✓ CALL COMPLETED — {ALWAYS_CALL_NAME}")
+            logger.info(f"    Call ID: {result_1.call_id}")
+            logger.info(f"    Transcript: {(result_1.transcript or '')[:150]}...")
+            logger.info(f"    Price: ₹{result_1.price}")
+            logger.info(f"    Availability: {result_1.availability}")
+            logger.info(f"    Negotiated: {result_1.negotiated}")
+            logger.info(f"    Delivery: {result_1.delivery_time}")
+            logger.info(f"    Confidence: {result_1.confidence}")
+
+            real_results.append({
+                "source_type": "OFFLINE",
+                "vendor_name": result_1.vendor_name,
+                "price": result_1.price,
+                "delivery_time": result_1.delivery_time or "Contact vendor",
+                "confidence": result_1.confidence,
+                "product_name": product,
+                "category": category,
+                "availability": "In Stock" if result_1.availability else "Out of Stock",
+                "negotiated": result_1.negotiated,
+                "notes": result_1.notes,
+            })
+            real_call_count += 1
+        else:
+            logger.warning(f"  ✗ CALL FAILED/INCOMPLETE — {ALWAYS_CALL_NAME} (status: {result_1.status})")
+            logger.warning(f"    Falling back to mock result for {ALWAYS_CALL_NAME}")
+            mock_result = await mock_service.call_vendor(
+                vendor_name=ALWAYS_CALL_NAME,
+                vendor_phone=ALWAYS_CALL_PHONE,
+                product=product,
+                category=category
             )
-            
-            # Call with sequential=True and delay between calls
-            call_results = await call_vendors_for_pricing(
-                vendors=vendors_for_real_calls,
+            real_results.append({
+                "source_type": "OFFLINE",
+                "vendor_name": mock_result.vendor_name,
+                "price": mock_result.price,
+                "delivery_time": mock_result.delivery_time or "Contact vendor",
+                "confidence": mock_result.confidence * 0.8,
+                "product_name": product,
+                "category": category,
+                "availability": "In Stock" if mock_result.availability else "Out of Stock",
+                "negotiated": mock_result.negotiated,
+                "notes": f"MOCK FALLBACK — real call {result_1.status}",
+            })
+            mock_fallback_count += 1
+
+    except Exception as e:
+        logger.error(f"  ✗ EXCEPTION during call to {ALWAYS_CALL_NAME}: {e}")
+        logger.error("    Falling back to mock result")
+        mock_result = await mock_service.call_vendor(
+            vendor_name=ALWAYS_CALL_NAME,
+            vendor_phone=ALWAYS_CALL_PHONE,
+            product=product,
+            category=category
+        )
+        real_results.append({
+            "source_type": "OFFLINE",
+            "vendor_name": mock_result.vendor_name,
+            "price": mock_result.price,
+            "delivery_time": mock_result.delivery_time or "Contact vendor",
+            "confidence": mock_result.confidence * 0.8,
+            "product_name": product,
+            "category": category,
+            "availability": "In Stock" if mock_result.availability else "Out of Stock",
+            "negotiated": mock_result.negotiated,
+            "notes": "MOCK FALLBACK — real call exception",
+        })
+        mock_fallback_count += 1
+
+    # ── Step 5: Delay between calls ──
+    if top_vendor:
+        logger.info(f"  Waiting {DELAY_BETWEEN_CALLS}s before next call...")
+        await asyncio.sleep(DELAY_BETWEEN_CALLS)
+
+    # ── Step 6: REAL CALL #2 — Top discovered vendor ──
+    if top_vendor:
+        vendor_name = top_vendor["name"]
+        vendor_phone = top_vendor["phone_number"]
+
+        logger.info("-" * 50)
+        logger.info(f"REAL CALL #2: {vendor_name} ({vendor_phone})")
+        logger.info(f"  Starting call... (timeout: {REAL_CALL_TIMEOUT}s)")
+
+        try:
+            result_2 = await voice_service.call_vendor(
+                vendor_name=vendor_name,
+                vendor_phone=vendor_phone,
                 product=product,
                 category=category,
-                bland_api_key=BLAND_API_KEY,
-                openai_api_key=EMERGENT_LLM_KEY,
-                mock_mode=False,
-                sequential=True,  # SEQUENTIAL MODE
-                delay_between_calls=10  # Wait 10 seconds between calls
+                max_wait=REAL_CALL_TIMEOUT
             )
-            
-            # Convert CallResult to search result format
-            for call_result in call_results:
-                if call_result.price and call_result.availability:
-                    real_results.append({
-                        "source_type": "OFFLINE",
-                        "vendor_name": call_result.vendor_name,
-                        "price": call_result.price,
-                        "delivery_time": call_result.delivery_time or "Contact vendor",
-                        "confidence": call_result.confidence,
-                        "product_name": product,
-                        "category": category,
-                        "availability": "In Stock" if call_result.availability else "Out of Stock"
-                    })
-                    logger.info(
-                        f"✓ Real call result: {call_result.vendor_name} - ₹{call_result.price} "
-                        f"({'negotiated' if call_result.negotiated else 'fixed'})"
-                    )
-            
-            logger.info(f"Sequential real calls completed: {len(real_results)} successful results")
-        
-        # Generate MOCK data for remaining vendors
-        mock_results = []
-        if vendors_for_mock:
-            logger.info(f"Generating mock data for {len(vendors_for_mock)} remaining vendors...")
-            for vendor in vendors_for_mock:
-                # Generate mock result with vendor's real name
-                base_price = random.randint(5000, 150000) if category == "electronics" else random.randint(50, 5000)
-                price = round(base_price * random.uniform(0.8, 1.1), 2)
-                
-                mock_results.append({
+
+            if result_2.status == "completed" and result_2.price is not None:
+                logger.info(f"  ✓ CALL COMPLETED — {vendor_name}")
+                logger.info(f"    Call ID: {result_2.call_id}")
+                logger.info(f"    Transcript: {(result_2.transcript or '')[:150]}...")
+                logger.info(f"    Price: ₹{result_2.price}")
+                logger.info(f"    Availability: {result_2.availability}")
+                logger.info(f"    Negotiated: {result_2.negotiated}")
+                logger.info(f"    Delivery: {result_2.delivery_time}")
+                logger.info(f"    Confidence: {result_2.confidence}")
+
+                real_results.append({
                     "source_type": "OFFLINE",
-                    "vendor_name": vendor["name"],
-                    "price": price,
-                    "delivery_time": random.choice([
-                        "Pick up now", "Local delivery (1-2 hours)", 
-                        "Same day delivery", "Available in 30 mins"
-                    ]),
-                    "confidence": random.uniform(0.7, 0.9),
+                    "vendor_name": result_2.vendor_name,
+                    "price": result_2.price,
+                    "delivery_time": result_2.delivery_time or "Contact vendor",
+                    "confidence": result_2.confidence,
                     "product_name": product,
                     "category": category,
-                    "availability": random.choice(["In Stock", "Available", "Limited Stock"])
+                    "availability": "In Stock" if result_2.availability else "Out of Stock",
+                    "negotiated": result_2.negotiated,
+                    "notes": result_2.notes,
                 })
-            logger.info(f"Mock data generated: {len(mock_results)} results")
-        
-        # Combine real and mock results
-        all_offline_results = real_results + mock_results
-        
-        # If still need more results, add generic mock vendors
-        if len(all_offline_results) < 3:
-            logger.info("Adding generic mock vendors to reach minimum 3 results")
-            generic_mock = generate_mock_offline_results(
-                product, category, location,
-                count=3 - len(all_offline_results)
+                real_call_count += 1
+            else:
+                logger.warning(f"  ✗ CALL FAILED/INCOMPLETE — {vendor_name} (status: {result_2.status})")
+                logger.warning(f"    Falling back to mock result for {vendor_name}")
+                mock_result = await mock_service.call_vendor(
+                    vendor_name=vendor_name,
+                    vendor_phone=vendor_phone,
+                    product=product,
+                    category=category
+                )
+                real_results.append({
+                    "source_type": "OFFLINE",
+                    "vendor_name": mock_result.vendor_name,
+                    "price": mock_result.price,
+                    "delivery_time": mock_result.delivery_time or "Contact vendor",
+                    "confidence": mock_result.confidence * 0.8,
+                    "product_name": product,
+                    "category": category,
+                    "availability": "In Stock" if mock_result.availability else "Out of Stock",
+                    "negotiated": mock_result.negotiated,
+                    "notes": f"MOCK FALLBACK — real call {result_2.status}",
+                })
+                mock_fallback_count += 1
+
+        except Exception as e:
+            logger.error(f"  ✗ EXCEPTION during call to {vendor_name}: {e}")
+            logger.error("    Falling back to mock result")
+            mock_result = await mock_service.call_vendor(
+                vendor_name=vendor_name,
+                vendor_phone=vendor_phone,
+                product=product,
+                category=category
             )
-            all_offline_results.extend(generic_mock)
-        
-        logger.info(
-            f"Offline pipeline complete: {len(all_offline_results)} total "
-            f"({len(real_results)} real sequential, {len(mock_results)} mock from discovered)"
+            real_results.append({
+                "source_type": "OFFLINE",
+                "vendor_name": mock_result.vendor_name,
+                "price": mock_result.price,
+                "delivery_time": mock_result.delivery_time or "Contact vendor",
+                "confidence": mock_result.confidence * 0.8,
+                "product_name": product,
+                "category": category,
+                "availability": "In Stock" if mock_result.availability else "Out of Stock",
+                "negotiated": mock_result.negotiated,
+                "notes": "MOCK FALLBACK — real call exception",
+            })
+            mock_fallback_count += 1
+
+    # ── Step 7: Generate MOCK data for all remaining vendors ──
+    mock_results = []
+    for vendor in remaining_vendors:
+        base_price = random.randint(5000, 150000) if category == "electronics" else random.randint(50, 5000)
+        price = round(base_price * random.uniform(0.8, 1.1), 2)
+        mock_results.append({
+            "source_type": "OFFLINE",
+            "vendor_name": vendor["name"],
+            "price": price,
+            "delivery_time": random.choice([
+                "Pick up now", "Local delivery (1-2 hours)",
+                "Same day delivery", "Available in 30 mins"
+            ]),
+            "confidence": random.uniform(0.7, 0.9),
+            "product_name": product,
+            "category": category,
+            "availability": random.choice(["In Stock", "Available", "Limited Stock"]),
+            "negotiated": False,
+            "notes": "",
+        })
+    logger.info(f"Generated mock data for {len(mock_results)} remaining vendors")
+
+    # ── Step 8: Combine all results ──
+    all_offline_results = real_results + mock_results
+
+    # Ensure minimum 3 results
+    if len(all_offline_results) < 3:
+        logger.info("Adding generic mock vendors to reach minimum 3 results")
+        generic_mock = generate_mock_offline_results(
+            product, category, location,
+            count=3 - len(all_offline_results)
         )
-        
-        return all_offline_results
-        
-    except Exception as e:
-        logger.error(f"Offline pipeline error: {e}")
-        # Return mock data as fallback
-        return generate_mock_offline_results(product, category, location, count=5)
+        all_offline_results.extend(generic_mock)
+
+    logger.info("=" * 70)
+    logger.info("OFFLINE PIPELINE COMPLETE:")
+    logger.info(f"  Total results: {len(all_offline_results)}")
+    logger.info(f"  Real calls successful: {real_call_count}")
+    logger.info(f"  Real calls fell back to mock: {mock_fallback_count}")
+    logger.info(f"  Mocked vendors: {len(mock_results)}")
+    logger.info("=" * 70)
+
+    return all_offline_results
 
 
 async def store_search_analytics(
