@@ -399,8 +399,10 @@ async def search_products(request: SearchRequest):
 
 async def run_offline_pipeline_safe(product: str, category: str, location: str) -> List[dict]:
     """
-    Run offline pipeline with error handling
-    Returns list of offline results or empty list if fails
+    Run offline pipeline with HYBRID approach:
+    - Make REAL Bland.ai calls to top 2 vendors
+    - Use MOCK data for remaining vendors
+    This stays within rate limits while providing real data
     """
     try:
         # Discover vendors
@@ -410,28 +412,75 @@ async def run_offline_pipeline_safe(product: str, category: str, location: str) 
         
         if not discovered_vendors:
             logger.warning("No vendors discovered for offline pipeline")
-            return []
+            return generate_mock_offline_results(product, category, location, count=3)
         
-        # Call vendors with AI
-        offline_results = await call_vendors_with_ai(
-            discovered_vendors, product, category
+        # HYBRID APPROACH: Split vendors into real and mock
+        real_call_limit = 2  # Make real calls to top 2 only
+        vendors_for_real_calls = discovered_vendors[:real_call_limit]
+        vendors_for_mock = discovered_vendors[real_call_limit:]
+        
+        logger.info(
+            f"HYBRID MODE: Real calls to {len(vendors_for_real_calls)} vendors, "
+            f"mock data for {len(vendors_for_mock)} vendors"
         )
         
-        # Add mock fallback if needed
-        if len(offline_results) < 2:
-            logger.info("Supplementing with mock offline vendors")
-            mock_offline = generate_mock_offline_results(
-                product, category, location,
-                count=max(2, 3 - len(offline_results))
+        # Make REAL calls to top 2 vendors
+        real_results = []
+        if vendors_for_real_calls and not MOCK_VOICE_CALLS:
+            logger.info(f"Making REAL Bland.ai calls to top {len(vendors_for_real_calls)} vendors...")
+            real_results = await call_vendors_with_ai(
+                vendors_for_real_calls, product, category
             )
-            offline_results.extend(mock_offline)
+            logger.info(f"Real calls completed: {len(real_results)} results")
         
-        return offline_results
+        # Generate MOCK data for remaining vendors
+        mock_results = []
+        if vendors_for_mock:
+            logger.info(f"Generating mock data for {len(vendors_for_mock)} vendors...")
+            for vendor in vendors_for_mock:
+                # Generate mock result with vendor's real name
+                base_price = random.randint(5000, 150000) if category == "electronics" else random.randint(50, 5000)
+                price = round(base_price * random.uniform(0.8, 1.1), 2)
+                
+                mock_results.append({
+                    "source_type": "OFFLINE",
+                    "vendor_name": vendor["name"],
+                    "price": price,
+                    "delivery_time": random.choice([
+                        "Pick up now", "Local delivery (1-2 hours)", 
+                        "Same day delivery", "Available in 30 mins"
+                    ]),
+                    "confidence": random.uniform(0.7, 0.9),
+                    "product_name": product,
+                    "category": category,
+                    "availability": random.choice(["In Stock", "Available", "Limited Stock"])
+                })
+            logger.info(f"Mock data generated: {len(mock_results)} results")
+        
+        # Combine real and mock results
+        all_offline_results = real_results + mock_results
+        
+        # If still need more results, add generic mock vendors
+        if len(all_offline_results) < 3:
+            logger.info("Adding generic mock vendors to reach minimum 3 results")
+            generic_mock = generate_mock_offline_results(
+                product, category, location,
+                count=3 - len(all_offline_results)
+            )
+            all_offline_results.extend(generic_mock)
+        
+        logger.info(
+            f"Offline pipeline complete: {len(all_offline_results)} total "
+            f"({len(real_results)} real, {len(mock_results)} mock from discovered, "
+            f"{max(0, 3 - len(real_results) - len(mock_results))} generic mock)"
+        )
+        
+        return all_offline_results
         
     except Exception as e:
         logger.error(f"Offline pipeline error: {e}")
         # Return mock data as fallback
-        return generate_mock_offline_results(product, category, location, count=3)
+        return generate_mock_offline_results(product, category, location, count=5)
 
 
 async def store_search_analytics(
