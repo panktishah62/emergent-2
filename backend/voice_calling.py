@@ -31,7 +31,7 @@ class CallResult(BaseModel):
     delivery_time: Optional[str] = None
     notes: str = ""
     confidence: float = 0.0
-    call_duration: Optional[int] = None
+    call_duration: Optional[float] = None
 
 
 class VoiceCallingService:
