@@ -4,6 +4,8 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
+import hmac
+import hashlib
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Literal, Any
@@ -15,6 +17,7 @@ import random
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 import googlemaps
 import phonenumbers
+import razorpay
 from online_pipeline import run_online_pipeline, UnifiedResult
 from vendor_discovery import discover_vendors, Vendor
 from voice_calling import call_vendors_for_pricing, CallResult
@@ -49,6 +52,16 @@ gmaps = googlemaps.Client(key=google_places_key) if google_places_key else None
 BLAND_API_KEY = os.environ.get('BLAND_API_KEY')
 EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
 MOCK_VOICE_CALLS = os.environ.get('MOCK_VOICE_CALLS', 'true').lower() == 'true'
+
+# Razorpay configuration
+RAZORPAY_KEY_ID = os.environ.get('RAZORPAY_KEY_ID')
+RAZORPAY_KEY_SECRET = os.environ.get('RAZORPAY_KEY_SECRET')
+razorpay_client = None
+if RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET:
+    razorpay_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+    logger.info("Razorpay client initialized")
+else:
+    logger.warning("Razorpay keys not configured")
 
 # Pydantic Models
 class SearchRequest(BaseModel):
@@ -443,6 +456,120 @@ async def reset_chat(request: dict):
     if session_id and session_id in chat_sessions:
         del chat_sessions[session_id]
     return {"status": "ok", "message": "Session reset"}
+
+
+# ── Razorpay Payment Endpoints ──
+
+class CreateOrderRequest(BaseModel):
+    session_id: Optional[str] = None
+
+class VerifyPaymentRequest(BaseModel):
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+    session_id: Optional[str] = None
+
+
+@api_router.post("/payments/create-order")
+async def create_razorpay_order(request: CreateOrderRequest):
+    """Create a Razorpay order for Rs 99 premium upgrade"""
+    if not razorpay_client:
+        raise HTTPException(status_code=500, detail="Payment service not configured")
+
+    try:
+        order_data = {
+            "amount": 9900,  # Rs 99 in paise
+            "currency": "INR",
+            "receipt": f"ph_{uuid.uuid4().hex[:16]}",
+            "payment_capture": 1,
+        }
+
+        order = razorpay_client.order.create(data=order_data)
+        logger.info(f"Razorpay order created: {order['id']} for Rs 99")
+
+        # Store order in DB
+        payments_collection = db["payments"]
+        await payments_collection.insert_one({
+            "order_id": order["id"],
+            "session_id": request.session_id,
+            "amount": 9900,
+            "currency": "INR",
+            "status": "created",
+            "created_at": datetime.now(timezone.utc),
+        })
+
+        return {
+            "order_id": order["id"],
+            "amount": order["amount"],
+            "currency": order["currency"],
+            "key_id": RAZORPAY_KEY_ID,
+        }
+
+    except Exception as e:
+        logger.error(f"Razorpay order creation failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create payment order")
+
+
+@api_router.post("/payments/verify")
+async def verify_razorpay_payment(request: VerifyPaymentRequest):
+    """Verify Razorpay payment signature and mark as paid"""
+    if not razorpay_client:
+        raise HTTPException(status_code=500, detail="Payment service not configured")
+
+    try:
+        # Verify signature
+        message = f"{request.razorpay_order_id}|{request.razorpay_payment_id}"
+        generated_signature = hmac.new(
+            RAZORPAY_KEY_SECRET.encode(),
+            message.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+        if generated_signature != request.razorpay_signature:
+            logger.warning(f"Payment signature mismatch for order {request.razorpay_order_id}")
+            raise HTTPException(status_code=400, detail="Payment verification failed")
+
+        logger.info(f"Payment verified: order={request.razorpay_order_id} payment={request.razorpay_payment_id}")
+
+        # Update payment record in DB
+        payments_collection = db["payments"]
+        await payments_collection.update_one(
+            {"order_id": request.razorpay_order_id},
+            {"$set": {
+                "payment_id": request.razorpay_payment_id,
+                "signature": request.razorpay_signature,
+                "status": "paid",
+                "paid_at": datetime.now(timezone.utc),
+                "session_id": request.session_id,
+            }}
+        )
+
+        return {
+            "status": "paid",
+            "order_id": request.razorpay_order_id,
+            "payment_id": request.razorpay_payment_id,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Payment verification error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Payment verification failed")
+
+
+@api_router.get("/payments/status/{session_id}")
+async def check_payment_status(session_id: str):
+    """Check if a session has an active premium payment"""
+    payments_collection = db["payments"]
+    payment = await payments_collection.find_one(
+        {"session_id": session_id, "status": "paid"},
+        {"_id": 0, "order_id": 1, "payment_id": 1, "status": 1, "paid_at": 1}
+    )
+    if payment:
+        if payment.get("paid_at"):
+            payment["paid_at"] = payment["paid_at"].isoformat()
+        return {"is_premium": True, "payment": payment}
+    return {"is_premium": False}
 
 
 def generate_mock_offline_results(product: str, category: str, location: str, count: int = 3) -> List[dict]:

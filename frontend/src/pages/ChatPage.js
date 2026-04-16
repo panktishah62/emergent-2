@@ -4,10 +4,11 @@ import axios from 'axios';
 import {
   Send, Zap, RotateCcw, Clock, Package, ShieldCheck,
   CheckCircle, Loader2, MapPin, Tag, Store, Globe,
-  ChevronDown, AlertCircle, Sparkles, Phone
+  ChevronDown, AlertCircle, Sparkles, Phone, X, Crown
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+const RAZORPAY_KEY = process.env.REACT_APP_RAZORPAY_KEY_ID;
 
 const ChatPage = () => {
   const [messages, setMessages] = useState([]);
@@ -26,6 +27,12 @@ const ChatPage = () => {
   const [parsedQuery, setParsedQuery] = useState(null);
   const [showResults, setShowResults] = useState(false);
   const [waitingForResults, setWaitingForResults] = useState(false);
+
+  // Paywall state
+  const [showPaywall, setShowPaywall] = useState(false);
+  const [isPremium, setIsPremium] = useState(false);
+  const [hasShownPaywall, setHasShownPaywall] = useState(false);
+  const [paymentProcessing, setPaymentProcessing] = useState(false);
 
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -76,6 +83,80 @@ const ChatPage = () => {
 
     return () => clearInterval(interval);
   }, [animatingProgress, progressStates.length]);
+
+  // Trigger paywall after first successful results display
+  useEffect(() => {
+    if (showResults && results && results.length > 0 && !isPremium && !hasShownPaywall) {
+      const timer = setTimeout(() => {
+        setShowPaywall(true);
+        setHasShownPaywall(true);
+      }, 2000); // 2s after results appear
+      return () => clearTimeout(timer);
+    }
+  }, [showResults, results, isPremium, hasShownPaywall]);
+
+  // Razorpay payment handler
+  const handlePayment = async () => {
+    setPaymentProcessing(true);
+    try {
+      // Create order on backend
+      const { data } = await axios.post(`${API}/payments/create-order`, {
+        session_id: sessionId,
+      });
+
+      const options = {
+        key: data.key_id || RAZORPAY_KEY,
+        amount: data.amount,
+        currency: data.currency,
+        name: 'PriceHunter',
+        description: 'Premium Upgrade — Unlimited Price Hunting',
+        order_id: data.order_id,
+        handler: async (response) => {
+          // Verify payment on backend
+          try {
+            await axios.post(`${API}/payments/verify`, {
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+              session_id: sessionId,
+            });
+            setIsPremium(true);
+            setShowPaywall(false);
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              content: "Premium unlocked! I'll keep helping you find the best prices across all products and services.",
+              isPremium: true,
+            }]);
+          } catch (err) {
+            console.error('Verification failed:', err);
+            setMessages(prev => [...prev, {
+              role: 'assistant',
+              content: "Payment received but verification had an issue. Please contact support if needed.",
+              isError: true,
+            }]);
+          }
+          setPaymentProcessing(false);
+        },
+        modal: {
+          ondismiss: () => {
+            setPaymentProcessing(false);
+          },
+        },
+        theme: {
+          color: '#00FF88',
+        },
+      };
+
+      const rzp = new window.Razorpay(options);
+      rzp.on('payment.failed', () => {
+        setPaymentProcessing(false);
+      });
+      rzp.open();
+    } catch (err) {
+      console.error('Order creation failed:', err);
+      setPaymentProcessing(false);
+    }
+  };
 
   const sendMessage = async () => {
     const text = input.trim();
@@ -312,6 +393,17 @@ const ChatPage = () => {
           </button>
         </div>
       </div>
+
+      {/* Paywall Modal */}
+      <AnimatePresence>
+        {showPaywall && (
+          <PaywallModal
+            onPay={handlePayment}
+            onClose={() => setShowPaywall(false)}
+            processing={paymentProcessing}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 };
@@ -329,6 +421,7 @@ const AssistantAvatar = () => (
 /* ===== Message Bubble ===== */
 const MessageBubble = ({ message, index }) => {
   const isUser = message.role === 'user';
+  const isPremiumMsg = message.isPremium;
   return (
     <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3 }}
@@ -338,11 +431,12 @@ const MessageBubble = ({ message, index }) => {
       {!isUser && <AssistantAvatar />}
       <div className={`max-w-[80%] px-4 py-3 text-sm leading-relaxed ${isUser ? 'rounded-2xl rounded-tr-sm' : 'rounded-2xl rounded-tl-sm'}`}
         style={{
-          backgroundColor: isUser ? 'rgba(0,255,136,0.12)' : message.isError ? 'rgba(255,68,68,0.1)' : 'rgba(19,27,47,0.8)',
-          border: `1px solid ${isUser ? 'rgba(0,255,136,0.2)' : message.isError ? 'rgba(255,68,68,0.2)' : 'rgba(255,255,255,0.06)'}`,
+          backgroundColor: isPremiumMsg ? 'rgba(255,215,0,0.08)' : isUser ? 'rgba(0,255,136,0.12)' : message.isError ? 'rgba(255,68,68,0.1)' : 'rgba(19,27,47,0.8)',
+          border: `1px solid ${isPremiumMsg ? 'rgba(255,215,0,0.25)' : isUser ? 'rgba(0,255,136,0.2)' : message.isError ? 'rgba(255,68,68,0.2)' : 'rgba(255,255,255,0.06)'}`,
           color: '#FFFFFF', fontFamily: "'Inter', sans-serif"
         }}
       >
+        {isPremiumMsg && <Crown className="w-4 h-4 inline mr-1.5" style={{ color: '#FFD700' }} />}
         {message.content}
       </div>
     </motion.div>
@@ -759,6 +853,126 @@ const ProgressTimeline = ({ states }) => {
     </motion.div>
   );
 };
+
+
+/* ===== Paywall Modal ===== */
+const PaywallModal = ({ onPay, onClose, processing }) => (
+  <motion.div
+    initial={{ opacity: 0 }}
+    animate={{ opacity: 1 }}
+    exit={{ opacity: 0 }}
+    className="fixed inset-0 z-[100] flex items-center justify-center px-4"
+    style={{ backgroundColor: 'rgba(0,0,0,0.7)', backdropFilter: 'blur(8px)' }}
+    data-testid="paywall-modal"
+  >
+    <motion.div
+      initial={{ scale: 0.9, opacity: 0, y: 20 }}
+      animate={{ scale: 1, opacity: 1, y: 0 }}
+      exit={{ scale: 0.9, opacity: 0, y: 20 }}
+      transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+      className="relative w-full max-w-md rounded-3xl overflow-hidden"
+      style={{
+        background: 'linear-gradient(180deg, rgba(19,27,47,0.98) 0%, rgba(10,15,28,0.99) 100%)',
+        border: '1.5px solid rgba(255,215,0,0.2)',
+        boxShadow: '0 24px 80px rgba(0,0,0,0.6), 0 0 60px rgba(255,215,0,0.08)',
+      }}
+    >
+      {/* Close button */}
+      <button
+        onClick={onClose}
+        data-testid="paywall-close-btn"
+        className="absolute top-4 right-4 p-1.5 rounded-full transition-all duration-200 z-10"
+        style={{ backgroundColor: 'rgba(255,255,255,0.06)', color: '#8BA3CB' }}
+        onMouseEnter={e => { e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.12)'; e.currentTarget.style.color = '#FFF'; }}
+        onMouseLeave={e => { e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.06)'; e.currentTarget.style.color = '#8BA3CB'; }}
+      >
+        <X className="w-5 h-5" />
+      </button>
+
+      {/* Top accent line */}
+      <div className="h-1 w-full" style={{ background: 'linear-gradient(90deg, #FFD700, #00FF88, #FFD700)' }} />
+
+      <div className="px-8 pt-8 pb-6 text-center space-y-5">
+        {/* Crown icon */}
+        <div className="flex justify-center">
+          <div className="w-16 h-16 rounded-2xl flex items-center justify-center" style={{
+            background: 'linear-gradient(135deg, rgba(255,215,0,0.15), rgba(255,165,0,0.1))',
+            border: '1.5px solid rgba(255,215,0,0.25)',
+          }}>
+            <Crown className="w-8 h-8" style={{ color: '#FFD700' }} />
+          </div>
+        </div>
+
+        {/* Headline */}
+        <h2 className="text-2xl font-bold" style={{
+          fontFamily: "'Outfit', sans-serif",
+          color: '#FFFFFF',
+        }}>
+          Congratulations!
+        </h2>
+
+        {/* Copy */}
+        <div className="space-y-3">
+          <p className="text-base leading-relaxed" style={{
+            color: '#FFFFFF', fontFamily: "'Inter', sans-serif"
+          }}>
+            You saved a lot of money.
+          </p>
+          <p className="text-base leading-relaxed" style={{
+            color: 'rgba(255,255,255,0.85)', fontFamily: "'Inter', sans-serif"
+          }}>
+            I can help you get the <span style={{ color: '#00FF88', fontWeight: 600 }}>best price across all products and services</span> at just
+          </p>
+          <div className="py-2">
+            <span className="text-4xl font-black" style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              background: 'linear-gradient(135deg, #FFD700, #FFA500)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+            }}>
+              ₹99
+            </span>
+          </div>
+          <p className="text-sm" style={{
+            color: '#8BA3CB', fontFamily: "'Inter', sans-serif"
+          }}>
+            And I promise to save you <strong style={{ color: '#00FF88' }}>1000s of rupees</strong>.
+          </p>
+        </div>
+
+        {/* CTA Button */}
+        <button
+          onClick={onPay}
+          disabled={processing}
+          data-testid="paywall-pay-btn"
+          className="w-full py-4 rounded-2xl text-lg font-bold transition-all duration-300 transform hover:scale-[1.02] active:scale-[0.98]"
+          style={{
+            background: processing
+              ? 'rgba(255,255,255,0.1)'
+              : 'linear-gradient(135deg, #FFD700 0%, #FFA500 50%, #FF8C00 100%)',
+            color: processing ? '#8BA3CB' : '#000',
+            fontFamily: "'Inter', sans-serif",
+            boxShadow: processing ? 'none' : '0 8px 32px rgba(255,165,0,0.35)',
+            cursor: processing ? 'wait' : 'pointer',
+          }}
+        >
+          {processing ? (
+            <span className="flex items-center justify-center gap-2">
+              <Loader2 className="w-5 h-5 animate-spin" /> Processing...
+            </span>
+          ) : (
+            'Upgrade to Premium — ₹99'
+          )}
+        </button>
+
+        {/* Trust line */}
+        <p className="text-[11px]" style={{ color: 'rgba(139,163,203,0.6)', fontFamily: "'Inter', sans-serif" }}>
+          Secure payment via Razorpay. UPI, cards, and netbanking accepted.
+        </p>
+      </div>
+    </motion.div>
+  </motion.div>
+);
 
 
 export default ChatPage;
