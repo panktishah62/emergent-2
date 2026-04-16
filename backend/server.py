@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 import asyncio
 import random
 from emergentintegrations.llm.chat import LlmChat, UserMessage
+import googlemaps
+import phonenumbers
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -33,6 +35,10 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Initialize Google Places API client
+google_places_key = os.environ.get('GOOGLE_PLACES_API_KEY')
+gmaps = googlemaps.Client(key=google_places_key) if google_places_key else None
 
 # Pydantic Models
 class SearchRequest(BaseModel):
@@ -74,13 +80,6 @@ ONLINE_PLATFORMS = [
     "Vijay Sales", "JioMart"
 ]
 
-OFFLINE_VENDORS = [
-    "Sharma Electronics", "Kumar Store", "Patel Traders",
-    "Singh Mart", "Gupta Super Market", "Reddy Shopping Center",
-    "Mehta Electronics", "Desai General Store", "Joshi Bazaar",
-    "Rao Provisions"
-]
-
 def generate_mock_online_results(product: str, category: str, count: int = 5) -> List[dict]:
     """Generate mock online platform results"""
     results = []
@@ -118,7 +117,12 @@ def generate_mock_offline_results(product: str, category: str, location: str, co
     base_price = random.randint(1000, 50000) if category.lower() in ["electronics", "phone", "laptop"] else random.randint(50, 5000)
     
     for i in range(count):
-        vendor = random.choice(OFFLINE_VENDORS)
+        vendor = random.choice([
+            "Sharma Electronics", "Kumar Store", "Patel Traders",
+            "Singh Mart", "Gupta Super Market", "Reddy Shopping Center",
+            "Mehta Electronics", "Desai General Store", "Joshi Bazaar",
+            "Rao Provisions"
+        ])
         price_variation = random.uniform(0.80, 1.10)  # Offline can be cheaper or slightly more
         price = round(base_price * price_variation, 2)
         
@@ -142,6 +146,120 @@ def generate_mock_offline_results(product: str, category: str, location: str, co
             "availability": random.choice(availability_options)
         })
     
+    return results
+
+async def discover_local_vendors_with_google_places(product: str, category: str, location: str) -> List[dict]:
+    """Discover local vendors using Google Places API"""
+    if not gmaps or not location or location.lower() == "unknown":
+        logger.info("Google Places not available or no valid location, using mock data")
+        return []
+    
+    try:
+        # Map product categories to Google Places types
+        search_types_map = {
+            "groceries": "supermarket",
+            "electronics": "electronics_store",
+            "clothing": "clothing_store",
+            "medicine": "pharmacy",
+            "hardware": "hardware_store",
+            "general": "store"
+        }
+        
+        search_type = search_types_map.get(category, "store")
+        
+        # Search for places
+        logger.info(f"Searching Google Places for {search_type} near {location}")
+        places_result = gmaps.places(
+            query=f"{search_type} {location} India",
+            language="en"
+        )
+        
+        vendors = []
+        if places_result.get("results"):
+            for place in places_result["results"][:5]:  # Limit to 5 vendors
+                vendor_name = place.get("name", "Unknown Vendor")
+                address = place.get("formatted_address", location)
+                
+                # Extract phone number if available
+                place_id = place.get("place_id")
+                phone_number = None
+                
+                if place_id:
+                    try:
+                        place_details = gmaps.place(place_id, fields=["formatted_phone_number"])
+                        phone_number = place_details.get("result", {}).get("formatted_phone_number")
+                    except Exception as e:
+                        logger.warning(f"Could not fetch phone number for {vendor_name}: {e}")
+                
+                vendors.append({
+                    "name": vendor_name,
+                    "address": address,
+                    "phone_number": phone_number,
+                    "place_id": place_id
+                })
+        
+        logger.info(f"Found {len(vendors)} vendors via Google Places")
+        return vendors
+        
+    except Exception as e:
+        logger.error(f"Error searching Google Places: {e}")
+        return []
+
+async def simulate_bland_ai_vendor_calls(vendors: List[dict], product: str, category: str) -> List[dict]:
+    """
+    Simulate Bland.ai voice calls to vendors (real integration ready when needed)
+    For now, generates realistic pricing data as if calls were made
+    """
+    bland_api_key = os.environ.get('BLAND_API_KEY')
+    
+    if not bland_api_key or not vendors:
+        logger.info("Bland.ai not configured or no vendors to call, using mock responses")
+        return []
+    
+    results = []
+    base_price = random.randint(1000, 50000) if category.lower() in ["electronics", "phone", "laptop"] else random.randint(50, 5000)
+    
+    for vendor in vendors:
+        # NOTE: Real Bland.ai integration would make actual voice calls here
+        # For now, simulating the expected response from a call
+        
+        if not vendor.get("phone_number"):
+            logger.info(f"No phone number for {vendor['name']}, skipping call simulation")
+            continue
+        
+        # Simulate call response
+        price_variation = random.uniform(0.75, 1.05)
+        price = round(base_price * price_variation, 2)
+        
+        delivery_options = [
+            "Pick up now",
+            "Local delivery (1-2 hours)",
+            "Same day delivery",
+            "Available in 30 mins"
+        ]
+        
+        availability_options = ["In Stock", "Available", "Limited Stock"]
+        
+        results.append({
+            "source_type": "OFFLINE",
+            "vendor_name": vendor["name"],
+            "price": price,
+            "delivery_time": random.choice(delivery_options),
+            "confidence": random.uniform(0.75, 0.92),
+            "product_name": product,
+            "category": category,
+            "availability": random.choice(availability_options)
+        })
+        
+        # Real implementation would look like:
+        # call_response = await make_bland_ai_call(
+        #     phone_number=vendor["phone_number"],
+        #     vendor_name=vendor["name"],
+        #     product=product
+        # )
+        # results.append(parse_bland_ai_response(call_response))
+    
+    logger.info(f"Simulated calls to {len(results)} vendors")
     return results
 
 async def parse_query_with_openai(query: str, location: Optional[str]) -> StructuredQuery:
@@ -234,15 +352,36 @@ async def search_products(request: SearchRequest):
             count=random.randint(4, 7)
         )
         
-        # Step 3: Generate mock offline results
-        offline_results = generate_mock_offline_results(
+        # Step 3: Discover local vendors using Google Places API
+        discovered_vendors = await discover_local_vendors_with_google_places(
             structured_query.product,
             structured_query.category,
-            structured_query.location,
-            count=random.randint(2, 4)
+            structured_query.location
         )
         
-        # Step 4: Combine and rank results based on intent
+        # Step 4: Call vendors using Bland.ai (or simulate if not enough vendors)
+        offline_results = []
+        
+        if discovered_vendors:
+            # Use real vendors from Google Places with simulated Bland.ai calls
+            offline_results = await simulate_bland_ai_vendor_calls(
+                discovered_vendors,
+                structured_query.product,
+                structured_query.category
+            )
+        
+        # Fallback to mock data if no real vendors found
+        if len(offline_results) < 2:
+            logger.info("Adding mock offline vendors to supplement real data")
+            mock_offline = generate_mock_offline_results(
+                structured_query.product,
+                structured_query.category,
+                structured_query.location,
+                count=max(2, 3 - len(offline_results))
+            )
+            offline_results.extend(mock_offline)
+        
+        # Step 5: Combine and rank results based on intent
         all_results = online_results + offline_results
         
         intent = structured_query.intent
@@ -255,6 +394,7 @@ async def search_products(request: SearchRequest):
                 "Pick up now": 1,
                 "Local delivery (1-2 hours)": 2,
                 "Pick up in 30 mins": 1,
+                "Available in 30 mins": 1,
                 "Same day delivery": 3,
                 "Next day delivery": 4,
                 "2-3 days": 5,
@@ -268,7 +408,7 @@ async def search_products(request: SearchRequest):
             # Prioritize offline vendors
             all_results.sort(key=lambda x: (0 if x["source_type"] == "OFFLINE" else 1, x["price"]))
         
-        # Step 5: Create SearchResult objects with ranks
+        # Step 6: Create SearchResult objects with ranks
         search_results = []
         for idx, result in enumerate(all_results):
             search_results.append(SearchResult(
@@ -281,7 +421,7 @@ async def search_products(request: SearchRequest):
         end_time = asyncio.get_event_loop().time()
         search_time = round(end_time - start_time, 2)
         
-        # Step 6: Return response
+        # Step 7: Return response
         return SearchResponse(
             results=search_results,
             total_results=len(search_results),
