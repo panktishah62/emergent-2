@@ -1,0 +1,48 @@
+{
+  "timestamp": "2026-04-16T07:07:59.544611",
+  "total_tests": 8,
+  "passed_tests": 8,
+  "success_rate": "100.0%",
+  "results": [
+    {
+      "test": "API Health Check",
+      "status": "PASSED",
+      "details": "Status: 200, Response: {\"message\":\"PriceHunter API is running\"}"
+    },
+    {
+      "test": "Basic Search",
+      "status": "PASSED",
+      "details": "Found 10 results in 0.92s"
+    },
+    {
+      "test": "Search Without Location",
+      "status": "PASSED",
+      "details": "Found 7 results"
+    },
+    {
+      "test": "Complex Query Search",
+      "status": "PASSED",
+      "details": "Parsed intent: {'product': 'iPhone 15', 'category': 'electronics', 'intent': 'cheapest', 'location': 'Koramangala'}"
+    },
+    {
+      "test": "Online/Offline Results",
+      "status": "PASSED",
+      "details": "Online: 6, Offline: 3"
+    },
+    {
+      "test": "Price Formatting",
+      "status": "PASSED",
+      "details": "All prices are valid numbers"
+    },
+    {
+      "test": "Confidence Scores",
+      "status": "PASSED",
+      "details": "All confidence scores are valid (0-1)"
+    },
+    {
+      "test": "Empty Query Handling",
+      "status": "PASSED",
+      "details": "Status: 200"
+    }
+  ]
+}
