@@ -550,6 +550,63 @@ async def get_stats():
         logger.error(f"Error fetching stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@api_router.post("/test-voice-call")
+async def test_voice_call():
+    """
+    Test endpoint to make a single real Bland.ai call
+    Uses TEST_CALL_PHONE from environment
+    """
+    try:
+        test_phone = os.environ.get('TEST_CALL_PHONE')
+        bland_api_key = os.environ.get('BLAND_API_KEY')
+        
+        if not test_phone:
+            raise HTTPException(status_code=400, detail="TEST_CALL_PHONE not configured")
+        
+        if not bland_api_key:
+            raise HTTPException(status_code=400, detail="BLAND_API_KEY not configured")
+        
+        logger.info(f"Making test call to {test_phone}")
+        
+        # Import voice calling service
+        from voice_calling import VoiceCallingService
+        
+        # Create service with real mode
+        voice_service = VoiceCallingService(
+            bland_api_key=bland_api_key,
+            openai_api_key=os.environ.get('EMERGENT_LLM_KEY'),
+            mock_mode=False  # Force real call
+        )
+        
+        # Make test call
+        result = await voice_service.call_vendor(
+            vendor_name="Test Vendor",
+            vendor_phone=test_phone,
+            product="iPhone 15",
+            category="electronics"
+        )
+        
+        logger.info(f"Test call result: {result.status}")
+        
+        return {
+            "status": "call_completed",
+            "call_id": result.call_id,
+            "call_status": result.status,
+            "transcript": result.transcript,
+            "extracted_data": {
+                "price": result.price,
+                "availability": result.availability,
+                "negotiated": result.negotiated,
+                "confidence": result.confidence
+            },
+            "notes": result.notes
+        }
+        
+    except Exception as e:
+        logger.error(f"Test call failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @api_router.get("/")
 async def root():
     return {"message": "PriceHunter API is running"}
