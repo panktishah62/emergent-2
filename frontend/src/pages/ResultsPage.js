@@ -27,8 +27,13 @@ const ResultsPage = () => {
   const [loading, setLoading] = useState(true);
   const [currentStage, setCurrentStage] = useState(0);
   const [results, setResults] = useState([]);
+  const [filteredResults, setFilteredResults] = useState([]);
   const [searchData, setSearchData] = useState(null);
   const [error, setError] = useState(null);
+  
+  // Sort and filter states
+  const [sortBy, setSortBy] = useState('rank'); // 'rank', 'price', 'delivery'
+  const [filterSource, setFilterSource] = useState('all'); // 'all', 'online', 'offline'
 
   const stages = [
     'Understanding your query',
@@ -36,6 +41,31 @@ const ResultsPage = () => {
     'Calling nearby vendors',
     'Comparing results'
   ];
+
+  // Apply sorting and filtering
+  React.useEffect(() => {
+    if (!results.length) return;
+    
+    let filtered = [...results];
+    
+    // Filter by source
+    if (filterSource !== 'all') {
+      filtered = filtered.filter(r => 
+        r.source_type.toLowerCase() === filterSource.toLowerCase()
+      );
+    }
+    
+    // Sort
+    if (sortBy === 'price') {
+      filtered.sort((a, b) => a.price - b.price);
+    } else if (sortBy === 'delivery') {
+      // Simple sort - in production you'd parse delivery times
+      filtered.sort((a, b) => a.delivery_time.localeCompare(b.delivery_time));
+    }
+    // 'rank' keeps original order
+    
+    setFilteredResults(filtered);
+  }, [results, sortBy, filterSource]);
 
   useEffect(() => {
     if (!query) {
@@ -280,6 +310,80 @@ const ResultsPage = () => {
             </div>
           </motion.div>
 
+          {/* Sort and Filter Controls */}
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.3 }}
+            className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 rounded-2xl"
+            style={{
+              backgroundColor: 'rgba(19, 27, 47, 0.6)',
+              backdropFilter: 'blur(20px)',
+              borderWidth: '1px',
+              borderColor: 'rgba(255, 255, 255, 0.08)'
+            }}
+          >
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-bold" style={{ color: '#8BA3CB' }}>Sort by:</span>
+              <div className="flex gap-2">
+                {[
+                  { value: 'rank', label: 'Best Match' },
+                  { value: 'price', label: 'Price' },
+                  { value: 'delivery', label: 'Delivery' }
+                ].map(option => (
+                  <button
+                    key={option.value}
+                    onClick={() => setSortBy(option.value)}
+                    className="px-4 py-2 text-sm rounded-lg transition-all duration-300"
+                    style={{
+                      backgroundColor: sortBy === option.value 
+                        ? 'rgba(0, 255, 136, 0.2)' 
+                        : 'rgba(255, 255, 255, 0.05)',
+                      color: sortBy === option.value ? '#00FF88' : '#8BA3CB',
+                      borderWidth: '1px',
+                      borderColor: sortBy === option.value 
+                        ? 'rgba(0, 255, 136, 0.4)' 
+                        : 'transparent',
+                      fontFamily: "'Inter', sans-serif"
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-bold" style={{ color: '#8BA3CB' }}>Show:</span>
+              <div className="flex gap-2">
+                {[
+                  { value: 'all', label: 'All' },
+                  { value: 'online', label: 'Online' },
+                  { value: 'offline', label: 'Offline' }
+                ].map(option => (
+                  <button
+                    key={option.value}
+                    onClick={() => setFilterSource(option.value)}
+                    className="px-4 py-2 text-sm rounded-lg transition-all duration-300"
+                    style={{
+                      backgroundColor: filterSource === option.value 
+                        ? 'rgba(0, 255, 136, 0.2)' 
+                        : 'rgba(255, 255, 255, 0.05)',
+                      color: filterSource === option.value ? '#00FF88' : '#8BA3CB',
+                      borderWidth: '1px',
+                      borderColor: filterSource === option.value 
+                        ? 'rgba(0, 255, 136, 0.4)' 
+                        : 'transparent',
+                      fontFamily: "'Inter', sans-serif"
+                    }}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </motion.div>
+
           {/* Results Grid */}
           <motion.div
             initial="hidden"
@@ -293,7 +397,7 @@ const ResultsPage = () => {
             }}
             className="grid grid-cols-1 md:grid-cols-2 gap-6"
           >
-            {results.map((result, index) => (
+            {filteredResults.map((result, index) => (
               <ResultCard key={result.id} result={result} index={index} />
             ))}
           </motion.div>
