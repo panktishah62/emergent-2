@@ -15,6 +15,7 @@ from emergentintegrations.llm.chat import LlmChat, UserMessage
 import googlemaps
 import phonenumbers
 from online_pipeline import run_online_pipeline, UnifiedResult
+from vendor_discovery import discover_vendors, Vendor
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -126,61 +127,29 @@ def generate_mock_offline_results(product: str, category: str, location: str, co
     return results
 
 async def discover_local_vendors_with_google_places(product: str, category: str, location: str) -> List[dict]:
-    """Discover local vendors using Google Places API"""
-    if not gmaps or not location or location.lower() == "unknown":
-        logger.info("Google Places not available or no valid location, using mock data")
-        return []
+    """Discover local vendors using enhanced vendor discovery service"""
+    if not location or location.lower() == "unknown":
+        logger.info("No valid location, using mock vendors")
+        vendors = discover_vendors(category, "India", gmaps, max_results=5)
+    else:
+        logger.info(f"Discovering vendors for {category} near {location}")
+        vendors = discover_vendors(category, location, gmaps, max_results=10)
     
-    try:
-        # Map product categories to Google Places types
-        search_types_map = {
-            "groceries": "supermarket",
-            "electronics": "electronics_store",
-            "clothing": "clothing_store",
-            "medicine": "pharmacy",
-            "hardware": "hardware_store",
-            "general": "store"
-        }
-        
-        search_type = search_types_map.get(category, "store")
-        
-        # Search for places
-        logger.info(f"Searching Google Places for {search_type} near {location}")
-        places_result = gmaps.places(
-            query=f"{search_type} {location} India",
-            language="en"
-        )
-        
-        vendors = []
-        if places_result.get("results"):
-            for place in places_result["results"][:5]:  # Limit to 5 vendors
-                vendor_name = place.get("name", "Unknown Vendor")
-                address = place.get("formatted_address", location)
-                
-                # Extract phone number if available
-                place_id = place.get("place_id")
-                phone_number = None
-                
-                if place_id:
-                    try:
-                        place_details = gmaps.place(place_id, fields=["formatted_phone_number"])
-                        phone_number = place_details.get("result", {}).get("formatted_phone_number")
-                    except Exception as e:
-                        logger.warning(f"Could not fetch phone number for {vendor_name}: {e}")
-                
-                vendors.append({
-                    "name": vendor_name,
-                    "address": address,
-                    "phone_number": phone_number,
-                    "place_id": place_id
-                })
-        
-        logger.info(f"Found {len(vendors)} vendors via Google Places")
-        return vendors
-        
-    except Exception as e:
-        logger.error(f"Error searching Google Places: {e}")
-        return []
+    # Convert Vendor objects to dict format
+    vendor_dicts = []
+    for vendor in vendors:
+        vendor_dicts.append({
+            "name": vendor.name,
+            "phone_number": vendor.phone,
+            "address": vendor.address,
+            "place_id": vendor.place_id,
+            "location": vendor.location,
+            "rating": vendor.rating,
+            "is_mock": vendor.is_mock
+        })
+    
+    logger.info(f"Discovered {len(vendor_dicts)} vendors ({sum(1 for v in vendors if not v.is_mock)} real, {sum(1 for v in vendors if v.is_mock)} mock)")
+    return vendor_dicts
 
 async def simulate_bland_ai_vendor_calls(vendors: List[dict], product: str, category: str) -> List[dict]:
     """
