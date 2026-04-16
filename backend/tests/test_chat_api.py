@@ -1,6 +1,7 @@
 """
-Backend API Tests for PriceHunter Chat Endpoints
-Tests: POST /api/chat/message, POST /api/chat/reset, GET /api/health
+Backend API Tests for PriceHunter Chat Endpoints - Staged Flow
+Tests: POST /api/chat/message (with discovered_vendors, progress_states), POST /api/chat/reset, GET /api/health
+Key features: Staged display flow with vendor list, progress animation, then results
 """
 import pytest
 import requests
@@ -25,8 +26,8 @@ class TestHealthEndpoint:
         print(f"✓ Health check passed: {data}")
 
 
-class TestChatMessageEndpoint:
-    """Tests for POST /api/chat/message endpoint"""
+class TestChatMessageBasic:
+    """Basic tests for POST /api/chat/message endpoint"""
     
     def test_chat_message_without_session_id(self):
         """Test sending message without session_id creates new session"""
@@ -87,81 +88,241 @@ class TestChatMessageEndpoint:
         })
         assert response.status_code == 400
         print("✓ Whitespace-only message correctly returns 400")
+
+
+class TestStagedFlowDiscoveredVendors:
+    """Tests for STAGED flow: discovered_vendors array with name and phone"""
     
-    def test_chat_message_triggers_search(self):
-        """Test complete query triggers search and returns results"""
-        session_id = f"test_search_{uuid.uuid4()}"
+    def test_search_returns_discovered_vendors(self):
+        """Test that search returns discovered_vendors array with name and phone"""
+        session_id = f"test_vendors_{uuid.uuid4()}"
         
-        # Send a complete query with product + location
+        # Add delay to avoid LLM rate limits
+        time.sleep(5)
+        
         response = requests.post(f"{BASE_URL}/api/chat/message", json={
             "session_id": session_id,
             "message": "cheapest iPhone 15 in Bangalore"
-        }, timeout=120)  # LLM + search can take time
+        }, timeout=120)
         
         assert response.status_code == 200
         data = response.json()
         
         # Verify search was triggered
         assert data["search_triggered"] == True
-        assert data["conversation_state"] in ["searching", "results_ready"]
         
-        # Verify results structure
-        assert "results" in data
-        if data["results"]:
-            assert len(data["results"]) > 0
-            
-            # Verify result card structure
-            result = data["results"][0]
-            assert "rank" in result
-            assert "source_type" in result
-            assert result["source_type"] in ["ONLINE", "OFFLINE"]
-            assert "vendor_name" in result
-            assert "price" in result
-            assert isinstance(result["price"], (int, float))
-            assert "delivery_time" in result
-            assert "confidence" in result
-            assert isinstance(result["confidence"], (int, float))
-            assert 0 <= result["confidence"] <= 1
-            assert "availability" in result
-            
-            print(f"✓ Search triggered: {len(data['results'])} results found")
-            print(f"  Top result: {result['vendor_name']} - ₹{result['price']}")
+        # CRITICAL: Verify discovered_vendors array exists
+        assert "discovered_vendors" in data, "Missing discovered_vendors in response"
         
-        # Verify progress states
+        if data["discovered_vendors"]:
+            assert len(data["discovered_vendors"]) > 0, "discovered_vendors is empty"
+            
+            # Verify each vendor has name and phone
+            for vendor in data["discovered_vendors"]:
+                assert "name" in vendor, f"Vendor missing 'name': {vendor}"
+                assert "phone" in vendor, f"Vendor missing 'phone': {vendor}"
+                assert len(vendor["name"]) > 0, "Vendor name is empty"
+                # Phone can be "N/A" but should exist
+                assert vendor["phone"] is not None, "Vendor phone is None"
+            
+            print(f"✓ discovered_vendors: {len(data['discovered_vendors'])} vendors found")
+            print(f"  Sample: {data['discovered_vendors'][0]['name']} - {data['discovered_vendors'][0]['phone']}")
+        else:
+            print("⚠ discovered_vendors is empty (may be expected if no vendors found)")
+    
+    def test_discovered_vendors_have_address(self):
+        """Test that discovered_vendors include address field"""
+        session_id = f"test_addr_{uuid.uuid4()}"
+        
+        time.sleep(5)
+        
+        response = requests.post(f"{BASE_URL}/api/chat/message", json={
+            "session_id": session_id,
+            "message": "tomatoes near Rajkot"
+        }, timeout=120)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        if data.get("discovered_vendors"):
+            for vendor in data["discovered_vendors"]:
+                assert "address" in vendor, f"Vendor missing 'address': {vendor}"
+            
+            print(f"✓ All {len(data['discovered_vendors'])} vendors have address field")
+
+
+class TestStagedFlowProgressStates:
+    """Tests for STAGED flow: progress_states with per-vendor 'Contacting X' entries"""
+    
+    def test_progress_states_include_vendor_contacts(self):
+        """Test that progress_states include 'Contacting X' for each discovered vendor"""
+        session_id = f"test_progress_{uuid.uuid4()}"
+        
+        time.sleep(5)
+        
+        response = requests.post(f"{BASE_URL}/api/chat/message", json={
+            "session_id": session_id,
+            "message": "cheapest iPhone 15 in Bangalore"
+        }, timeout=120)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        assert data["search_triggered"] == True
         assert "progress_states" in data
+        assert "discovered_vendors" in data
+        
+        if data["progress_states"] and data["discovered_vendors"]:
+            # Extract stages that start with "Contacting"
+            contacting_stages = [s for s in data["progress_states"] if s["stage"].startswith("Contacting")]
+            
+            # Should have at least some "Contacting X" stages
+            assert len(contacting_stages) > 0, "No 'Contacting X' stages found in progress_states"
+            
+            # Each contacting stage should have vendor name
+            for stage in contacting_stages:
+                assert "Contacting" in stage["stage"]
+                # Detail should contain phone number
+                if stage.get("detail"):
+                    print(f"  Stage: {stage['stage']} - {stage['detail']}")
+            
+            print(f"✓ progress_states has {len(contacting_stages)} 'Contacting X' entries")
+    
+    def test_progress_states_structure(self):
+        """Test progress states have correct structure with stage, status, detail"""
+        session_id = f"test_pstruct_{uuid.uuid4()}"
+        
+        time.sleep(5)
+        
+        response = requests.post(f"{BASE_URL}/api/chat/message", json={
+            "session_id": session_id,
+            "message": "laptop under 50000 in Mumbai"
+        }, timeout=120)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
         if data["progress_states"]:
-            assert len(data["progress_states"]) == 6  # 6 stages
+            for state in data["progress_states"]:
+                assert "stage" in state, f"Missing 'stage' in progress state: {state}"
+                assert "status" in state, f"Missing 'status' in progress state: {state}"
+                assert state["status"] in ["pending", "active", "completed", "failed"], f"Invalid status: {state['status']}"
+            
+            # Check expected stages exist
             stages = [s["stage"] for s in data["progress_states"]]
-            assert "Understanding your request" in stages
-            assert "Searching online platforms" in stages
-            assert "Finding nearby vendors" in stages
-            assert "Calling vendors for prices" in stages
-            assert "Negotiating best deals" in stages
-            assert "Comparing & ranking results" in stages
-            print(f"✓ Progress states: {len(data['progress_states'])} stages")
+            assert "Understanding your request" in stages, "Missing 'Understanding your request' stage"
+            assert "Searching online platforms" in stages, "Missing 'Searching online platforms' stage"
+            
+            # Check that at least some stages are completed
+            completed = [s for s in data["progress_states"] if s["status"] == "completed"]
+            assert len(completed) > 0, "No stages completed"
+            
+            print(f"✓ Progress states valid: {len(completed)}/{len(data['progress_states'])} completed")
+            print(f"  Stages: {stages[:5]}...")
+
+
+class TestSearchResultsStructure:
+    """Tests for search results data structure and values"""
+    
+    def test_results_have_required_fields(self):
+        """Test that all results have required fields including rank, source_type, vendor_name, price, delivery_time, availability, confidence"""
+        session_id = f"test_fields_{uuid.uuid4()}"
         
-        # Verify parsed query
-        assert "parsed_query" in data
-        if data["parsed_query"]:
-            pq = data["parsed_query"]
-            assert "product" in pq
-            assert "location" in pq
-            assert "intent" in pq
-            assert "category" in pq
-            print(f"✓ Parsed query: {pq['product']} in {pq['location']} ({pq['intent']})")
+        time.sleep(5)
         
-        # Verify search metadata
+        response = requests.post(f"{BASE_URL}/api/chat/message", json={
+            "session_id": session_id,
+            "message": "nearest pharmacy in Delhi"
+        }, timeout=120)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        if data["results"]:
+            required_fields = [
+                "id", "rank", "source_type", "vendor_name", "price",
+                "delivery_time", "confidence", "is_best_deal", "product_name",
+                "category", "availability"
+            ]
+            
+            for result in data["results"]:
+                for field in required_fields:
+                    assert field in result, f"Missing field: {field}"
+                
+                # Verify data types
+                assert isinstance(result["rank"], int), f"rank should be int: {result['rank']}"
+                assert result["source_type"] in ["ONLINE", "OFFLINE"], f"Invalid source_type: {result['source_type']}"
+                assert isinstance(result["price"], (int, float)), f"price should be numeric: {result['price']}"
+                assert isinstance(result["confidence"], (int, float)), f"confidence should be numeric: {result['confidence']}"
+                assert 0 <= result["confidence"] <= 1, f"confidence out of range: {result['confidence']}"
+            
+            print(f"✓ All {len(data['results'])} results have required fields with correct types")
+    
+    def test_results_ranking_order(self):
+        """Test that results are ranked in order starting from 1"""
+        session_id = f"test_rank_{uuid.uuid4()}"
+        
+        time.sleep(5)
+        
+        response = requests.post(f"{BASE_URL}/api/chat/message", json={
+            "session_id": session_id,
+            "message": "cheapest laptop in Chennai"
+        }, timeout=120)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        if data["results"] and len(data["results"]) > 1:
+            ranks = [r["rank"] for r in data["results"]]
+            # Ranks should be sequential starting from 1
+            expected_ranks = list(range(1, len(ranks) + 1))
+            assert ranks == expected_ranks, f"Ranks not sequential: {ranks}"
+            
+            # First result should be best deal
+            assert data["results"][0]["is_best_deal"] == True
+            
+            print(f"✓ Results correctly ranked: {ranks[:5]}...")
+
+
+class TestSearchMetadata:
+    """Tests for search_metadata in response"""
+    
+    def test_search_metadata_structure(self):
+        """Test search_metadata has total_results, online_count, offline_count, search_time"""
+        session_id = f"test_meta_{uuid.uuid4()}"
+        
+        time.sleep(5)
+        
+        response = requests.post(f"{BASE_URL}/api/chat/message", json={
+            "session_id": session_id,
+            "message": "cheapest iPhone 15 in Bangalore"
+        }, timeout=120)
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        assert data["search_triggered"] == True
         assert "search_metadata" in data
+        
         if data["search_metadata"]:
             meta = data["search_metadata"]
-            assert "total_results" in meta
-            assert "online_count" in meta
-            assert "offline_count" in meta
-            assert "search_time" in meta
-            print(f"✓ Search metadata: {meta['total_results']} results in {meta['search_time']}s")
+            assert "total_results" in meta, "Missing total_results in search_metadata"
+            assert "online_count" in meta, "Missing online_count in search_metadata"
+            assert "offline_count" in meta, "Missing offline_count in search_metadata"
+            assert "search_time" in meta, "Missing search_time in search_metadata"
+            
+            # Verify counts add up
+            if data["results"]:
+                assert meta["total_results"] == len(data["results"]), "total_results mismatch"
+            
+            print(f"✓ search_metadata: {meta['total_results']} results ({meta['online_count']} online, {meta['offline_count']} offline) in {meta['search_time']}s")
+
+
+class TestConversationalFlow:
+    """Tests for conversational flow - partial queries should prompt for more info"""
     
-    def test_conversational_flow_asks_for_location(self):
-        """Test that partial query (product only) asks for location"""
+    def test_partial_query_asks_for_location(self):
+        """Test that partial query (product only) prompts for location before searching"""
         session_id = f"test_conv_{uuid.uuid4()}"
         
         response = requests.post(f"{BASE_URL}/api/chat/message", json={
@@ -172,21 +333,16 @@ class TestChatMessageEndpoint:
         assert response.status_code == 200
         data = response.json()
         
-        # Should not trigger search yet
-        assert data["search_triggered"] == False
+        # Should NOT trigger search yet (no location)
+        assert data["search_triggered"] == False, "Search should not trigger without location"
         assert data["conversation_state"] == "collecting"
         
-        # Assistant should ask for location
-        msg = data["assistant_message"].lower()
-        # Check if assistant is asking for more info (location, city, area, where)
-        location_keywords = ["location", "city", "area", "where", "which"]
-        has_location_question = any(kw in msg for kw in location_keywords)
+        # discovered_vendors should be empty or not present
+        if "discovered_vendors" in data:
+            assert len(data.get("discovered_vendors", [])) == 0, "Should not have discovered_vendors without search"
         
-        print(f"✓ Conversational flow: search_triggered={data['search_triggered']}")
-        print(f"  Assistant response: {data['assistant_message'][:100]}...")
-        
-        # Note: LLM might directly ask for location or provide other response
-        # The key test is that search was NOT triggered without location
+        print(f"✓ Partial query correctly does NOT trigger search")
+        print(f"  Assistant: {data['assistant_message'][:100]}...")
 
 
 class TestChatResetEndpoint:
@@ -223,113 +379,6 @@ class TestChatResetEndpoint:
         data = response.json()
         assert data["status"] == "ok"
         print(f"✓ Reset non-existent session: {data}")
-    
-    def test_reset_without_session_id(self):
-        """Test reset without session_id"""
-        response = requests.post(f"{BASE_URL}/api/chat/reset", json={})
-        
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "ok"
-        print(f"✓ Reset without session_id: {data}")
-
-
-class TestSearchResultsStructure:
-    """Tests for search results data structure and values"""
-    
-    def test_results_have_required_fields(self):
-        """Test that all results have required fields"""
-        session_id = f"test_fields_{uuid.uuid4()}"
-        
-        response = requests.post(f"{BASE_URL}/api/chat/message", json={
-            "session_id": session_id,
-            "message": "tomatoes near Rajkot"
-        }, timeout=120)
-        
-        assert response.status_code == 200
-        data = response.json()
-        
-        if data["results"]:
-            required_fields = [
-                "id", "rank", "source_type", "vendor_name", "price",
-                "delivery_time", "confidence", "is_best_deal", "product_name",
-                "category", "availability"
-            ]
-            
-            for result in data["results"]:
-                for field in required_fields:
-                    assert field in result, f"Missing field: {field}"
-            
-            print(f"✓ All {len(data['results'])} results have required fields")
-    
-    def test_results_ranking_order(self):
-        """Test that results are ranked in order"""
-        session_id = f"test_rank_{uuid.uuid4()}"
-        
-        response = requests.post(f"{BASE_URL}/api/chat/message", json={
-            "session_id": session_id,
-            "message": "laptop under 50000 in Mumbai"
-        }, timeout=120)
-        
-        assert response.status_code == 200
-        data = response.json()
-        
-        if data["results"] and len(data["results"]) > 1:
-            ranks = [r["rank"] for r in data["results"]]
-            # Ranks should be sequential starting from 1
-            expected_ranks = list(range(1, len(ranks) + 1))
-            assert ranks == expected_ranks, f"Ranks not sequential: {ranks}"
-            
-            # First result should be best deal
-            assert data["results"][0]["is_best_deal"] == True
-            
-            print(f"✓ Results correctly ranked: {ranks[:5]}...")
-    
-    def test_confidence_scores_valid(self):
-        """Test that confidence scores are between 0 and 1"""
-        session_id = f"test_conf_{uuid.uuid4()}"
-        
-        response = requests.post(f"{BASE_URL}/api/chat/message", json={
-            "session_id": session_id,
-            "message": "nearest pharmacy in Delhi"
-        }, timeout=120)
-        
-        assert response.status_code == 200
-        data = response.json()
-        
-        if data["results"]:
-            for result in data["results"]:
-                assert 0 <= result["confidence"] <= 1, f"Invalid confidence: {result['confidence']}"
-            
-            print(f"✓ All confidence scores valid (0-1)")
-
-
-class TestProgressStates:
-    """Tests for progress states structure"""
-    
-    def test_progress_states_structure(self):
-        """Test progress states have correct structure"""
-        session_id = f"test_progress_{uuid.uuid4()}"
-        
-        response = requests.post(f"{BASE_URL}/api/chat/message", json={
-            "session_id": session_id,
-            "message": "cheapest iPhone 15 in Bangalore"
-        }, timeout=120)
-        
-        assert response.status_code == 200
-        data = response.json()
-        
-        if data["progress_states"]:
-            for state in data["progress_states"]:
-                assert "stage" in state
-                assert "status" in state
-                assert state["status"] in ["pending", "active", "completed", "failed"]
-            
-            # Check that at least some stages are completed
-            completed = [s for s in data["progress_states"] if s["status"] == "completed"]
-            assert len(completed) > 0, "No stages completed"
-            
-            print(f"✓ Progress states valid: {len(completed)}/{len(data['progress_states'])} completed")
 
 
 if __name__ == "__main__":

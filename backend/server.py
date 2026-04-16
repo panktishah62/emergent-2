@@ -234,6 +234,7 @@ async def chat_message(request: ChatMessageRequest):
     search_metadata = None
     progress_states = []
     parsed_query_dict = None
+    discovered_vendors = []
     display_message = assistant_response
 
     if "[SEARCH_READY]" in assistant_response:
@@ -272,31 +273,48 @@ async def chat_message(request: ChatMessageRequest):
 
         except (json.JSONDecodeError, Exception) as e:
             logger.error(f"Failed to parse search params: {e}")
-            # Fallback: use the user's message as-is
             structured_query = await parse_query_with_openai(user_msg, None)
             parsed_query_dict = structured_query.model_dump()
 
-        # Build progress states
+        # Step 1: Discover vendors first (for the vendor list chat message)
+        try:
+            raw_vendors = await discover_local_vendors_with_google_places(
+                structured_query.product,
+                structured_query.category,
+                structured_query.location
+            )
+            for v in raw_vendors:
+                discovered_vendors.append({
+                    "name": v.get("name", "Unknown"),
+                    "phone": v.get("phone_number", "N/A"),
+                    "address": v.get("address", ""),
+                })
+            logger.info(f"Discovered {len(discovered_vendors)} vendors for chat display")
+        except Exception as e:
+            logger.error(f"Vendor discovery for chat failed: {e}")
+
+        # Build progress states — one per discovered vendor + online + ranking
         progress_states = [
             {"stage": "Understanding your request", "status": "completed", "detail": f"Looking for {structured_query.product} in {structured_query.location}"},
-            {"stage": "Searching online platforms", "status": "active", "detail": "Checking Amazon, Flipkart, and more..."},
-            {"stage": "Finding nearby vendors", "status": "pending", "detail": None},
-            {"stage": "Calling vendors for prices", "status": "pending", "detail": None},
-            {"stage": "Negotiating best deals", "status": "pending", "detail": None},
-            {"stage": "Comparing & ranking results", "status": "pending", "detail": None},
+            {"stage": "Searching online platforms", "status": "pending", "detail": "Checking Amazon, Flipkart, and more..."},
         ]
+        for v in discovered_vendors:
+            progress_states.append({
+                "stage": f"Contacting {v['name']}",
+                "status": "pending",
+                "detail": v.get("phone", ""),
+            })
+        progress_states.append({"stage": "Negotiating best deals", "status": "pending", "detail": None})
+        progress_states.append({"stage": "Comparing & ranking all results", "status": "pending", "detail": None})
 
-        # Run the actual search
+        # Step 2: Run the actual search
         try:
             start_time = asyncio.get_event_loop().time()
 
-            # Update progress: online search
-            progress_states[1]["status"] = "active"
-
-            # Run online pipeline
             online_results = []
             offline_results = []
 
+            # Online pipeline
             try:
                 online_unified = await run_online_pipeline(
                     structured_query.product,
@@ -314,29 +332,28 @@ async def chat_message(request: ChatMessageRequest):
                 progress_states[1]["status"] = "failed"
                 progress_states[1]["detail"] = "Online search encountered an error"
 
-            # Update progress: vendor discovery
-            progress_states[2]["status"] = "active"
-            progress_states[2]["detail"] = "Discovering local shops..."
-
+            # Offline pipeline
             try:
                 offline_results = await run_offline_pipeline_safe(
                     structured_query.product,
                     structured_query.category,
                     structured_query.location
                 )
-                progress_states[2]["status"] = "completed"
-                progress_states[2]["detail"] = f"Found {len(offline_results)} local vendors"
-                progress_states[3]["status"] = "completed"
-                progress_states[3]["detail"] = f"Called {len(offline_results)} vendors"
-                progress_states[4]["status"] = "completed"
-                progress_states[4]["detail"] = "Best prices negotiated"
+                # Mark all vendor contact stages as completed
+                for i in range(2, 2 + len(discovered_vendors)):
+                    if i < len(progress_states) - 2:
+                        progress_states[i]["status"] = "completed"
+                # Negotiating
+                progress_states[-2]["status"] = "completed"
+                progress_states[-2]["detail"] = f"Got prices from {len(offline_results)} vendors"
             except Exception as e:
                 logger.error(f"Offline pipeline failed: {e}")
-                progress_states[2]["status"] = "failed"
+                for i in range(2, 2 + len(discovered_vendors)):
+                    if i < len(progress_states) - 2:
+                        progress_states[i]["status"] = "failed"
 
             # Combine and rank
             all_results = online_results + offline_results
-            progress_states[5]["status"] = "active"
 
             if all_results:
                 ranked = rank_results(all_results, structured_query.intent)
@@ -359,11 +376,11 @@ async def chat_message(request: ChatMessageRequest):
                         "score": r.get("score", 0),
                     })
                 results = results_list
-                progress_states[5]["status"] = "completed"
-                progress_states[5]["detail"] = f"Ranked {len(results)} results by {structured_query.intent}"
+                progress_states[-1]["status"] = "completed"
+                progress_states[-1]["detail"] = f"Ranked {len(results)} results by {structured_query.intent}"
             else:
-                progress_states[5]["status"] = "failed"
-                progress_states[5]["detail"] = "No results found"
+                progress_states[-1]["status"] = "failed"
+                progress_states[-1]["detail"] = "No results found"
 
             end_time = asyncio.get_event_loop().time()
             search_time = round(end_time - start_time, 2)
@@ -403,6 +420,7 @@ async def chat_message(request: ChatMessageRequest):
         "assistant_message": display_message,
         "conversation_state": session["state"],
         "search_triggered": search_triggered,
+        "discovered_vendors": discovered_vendors,
         "results": results,
         "search_metadata": search_metadata,
         "progress_states": progress_states,
