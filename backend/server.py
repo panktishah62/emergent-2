@@ -6,8 +6,9 @@ import os
 import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Literal
+from typing import List, Optional, Literal, Any
 import uuid
+import json
 from datetime import datetime, timezone
 import asyncio
 import random
@@ -82,6 +83,26 @@ class SearchResponse(BaseModel):
     search_time: float
     parsed_query: StructuredQuery
 
+# Chat models
+class ChatMessageRequest(BaseModel):
+    session_id: Optional[str] = None
+    message: str
+
+class ProgressState(BaseModel):
+    stage: str
+    status: str  # "pending", "active", "completed", "failed"
+    detail: Optional[str] = None
+
+class ChatMessageResponse(BaseModel):
+    session_id: str
+    assistant_message: str
+    conversation_state: str  # "collecting", "searching", "results_ready"
+    search_triggered: bool
+    results: Optional[List[dict]] = None
+    search_metadata: Optional[dict] = None
+    progress_states: List[dict] = []
+    parsed_query: Optional[dict] = None
+
 
 def unified_to_search_result(unified: UnifiedResult, product: str, category: str) -> dict:
     """Convert UnifiedResult to SearchResult dict format"""
@@ -95,6 +116,308 @@ def unified_to_search_result(unified: UnifiedResult, product: str, category: str
         "category": category,
         "availability": "In Stock" if unified.availability else "Out of Stock"
     }
+
+
+CHAT_SYSTEM_PROMPT = """You are PriceHunter's shopping assistant. You help users find the best prices for products in India by collecting their requirements through friendly conversation.
+
+Your job:
+1. Greet the user warmly and ask what they're looking for.
+2. Through natural conversation, collect:
+   - **product**: The specific product or item they want (REQUIRED)
+   - **location**: Their city or area in India (REQUIRED - ask if not provided)
+   - **intent**: What matters most - cheapest price, fastest delivery, best overall value, or nearest shop (OPTIONAL - default to "best_value")
+3. Be conversational, friendly, and brief. Use 1-2 sentences max per response.
+4. Do NOT ask unnecessary follow-up questions. If the user names a product and location, that's enough — trigger the search immediately.
+5. Only ask a clarifying question if the product is truly ambiguous (e.g., "something for my kitchen") or if location is missing.
+
+CRITICAL RULE:
+When you have at least the product AND location, you MUST trigger the search. End your message with a special trigger on a NEW LINE:
+[SEARCH_READY]{"product":"<product>","category":"<category>","location":"<location>","intent":"<intent>"}
+
+The category must be one of: groceries, electronics, clothing, medicine, hardware, general
+The intent must be one of: cheapest, fastest, best_value, nearest
+
+Examples:
+- "cheapest iPhone 15 in Bangalore" → trigger immediately (product=iPhone 15, location=Bangalore, intent=cheapest)
+- "tomatoes near Rajkot" → trigger immediately (product=tomatoes, location=Rajkot, intent=nearest)
+- "I need a laptop" → ask for location only, then trigger
+- "help me find something" → ask what product they need
+
+IMPORTANT:
+- Do NOT ask about model variants, colors, or storage unless truly ambiguous.
+- If the user provides product + location in one message, respond briefly and trigger.
+- The JSON after [SEARCH_READY] must be valid JSON on the same line as the tag.
+"""
+
+
+# In-memory session store for chat conversations
+chat_sessions = {}
+
+
+async def get_chat_session(session_id: str) -> dict:
+    """Get or create a chat session"""
+    if session_id not in chat_sessions:
+        chat_sessions[session_id] = {
+            "session_id": session_id,
+            "messages": [],
+            "state": "collecting",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    return chat_sessions[session_id]
+
+
+@api_router.post("/chat/message")
+async def chat_message(request: ChatMessageRequest):
+    """
+    Chat endpoint for conversational shopping assistant.
+    Collects product info through conversation, triggers search when ready.
+    """
+    session_id = request.session_id or str(uuid.uuid4())
+    user_msg = request.message.strip()
+
+    if not user_msg:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    session = await get_chat_session(session_id)
+
+    # Add user message to history
+    session["messages"].append({"role": "user", "content": user_msg})
+
+    # Build conversation history for LLM
+    api_key = os.environ.get('EMERGENT_LLM_KEY')
+    if not api_key:
+        raise HTTPException(status_code=500, detail="LLM API key not configured")
+
+    try:
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=f"pricehunter_chat_{session_id}",
+            system_message=CHAT_SYSTEM_PROMPT
+        ).with_model("openai", "gpt-4o-mini")
+
+        # Replay previous messages to maintain context
+        for msg in session["messages"]:
+            if msg["role"] == "user":
+                await chat.send_message(UserMessage(text=msg["content"]))
+            # Note: assistant messages are part of the LlmChat session automatically
+
+        # Actually we need a different approach - send all history as context
+        # Let's rebuild: send the full conversation as a single contextual message
+    except Exception as e:
+        logger.error(f"Chat LLM error: {e}")
+
+    # Better approach: single LLM call with full conversation context
+    try:
+        conversation_text = ""
+        for msg in session["messages"][:-1]:  # All messages except current
+            role = "User" if msg["role"] == "user" else "Assistant"
+            conversation_text += f"{role}: {msg['content']}\n"
+
+        prompt = conversation_text + f"User: {user_msg}"
+
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=str(uuid.uuid4()),
+            system_message=CHAT_SYSTEM_PROMPT
+        ).with_model("openai", "gpt-4o-mini")
+
+        assistant_response = await chat.send_message(UserMessage(text=prompt))
+        assistant_response = assistant_response.strip()
+
+    except Exception as e:
+        logger.error(f"Chat LLM error: {e}", exc_info=True)
+        assistant_response = "I'm having trouble understanding. Could you tell me what product you're looking for and your city?"
+
+    # Check if search should be triggered
+    search_triggered = False
+    results = None
+    search_metadata = None
+    progress_states = []
+    parsed_query_dict = None
+    display_message = assistant_response
+
+    if "[SEARCH_READY]" in assistant_response:
+        search_triggered = True
+        session["state"] = "searching"
+
+        # Extract the JSON from the response
+        parts = assistant_response.split("[SEARCH_READY]")
+        display_message = parts[0].strip()
+        json_str = parts[1].strip() if len(parts) > 1 else ""
+
+        # Parse the structured query
+        try:
+            search_params = json.loads(json_str)
+            product = search_params.get("product", user_msg)
+            category = search_params.get("category", "general")
+            location = search_params.get("location", "India")
+            intent = search_params.get("intent", "best_value")
+
+            # Validate category and intent
+            valid_categories = ["groceries", "electronics", "clothing", "medicine", "hardware", "general"]
+            valid_intents = ["cheapest", "fastest", "best_value", "nearest"]
+            if category not in valid_categories:
+                category = "general"
+            if intent not in valid_intents:
+                intent = "best_value"
+
+            structured_query = StructuredQuery(
+                product=product,
+                category=category,
+                location=location,
+                intent=intent,
+                raw_query=user_msg
+            )
+            parsed_query_dict = structured_query.model_dump()
+
+        except (json.JSONDecodeError, Exception) as e:
+            logger.error(f"Failed to parse search params: {e}")
+            # Fallback: use the user's message as-is
+            structured_query = await parse_query_with_openai(user_msg, None)
+            parsed_query_dict = structured_query.model_dump()
+
+        # Build progress states
+        progress_states = [
+            {"stage": "Understanding your request", "status": "completed", "detail": f"Looking for {structured_query.product} in {structured_query.location}"},
+            {"stage": "Searching online platforms", "status": "active", "detail": "Checking Amazon, Flipkart, and more..."},
+            {"stage": "Finding nearby vendors", "status": "pending", "detail": None},
+            {"stage": "Calling vendors for prices", "status": "pending", "detail": None},
+            {"stage": "Negotiating best deals", "status": "pending", "detail": None},
+            {"stage": "Comparing & ranking results", "status": "pending", "detail": None},
+        ]
+
+        # Run the actual search
+        try:
+            start_time = asyncio.get_event_loop().time()
+
+            # Update progress: online search
+            progress_states[1]["status"] = "active"
+
+            # Run online pipeline
+            online_results = []
+            offline_results = []
+
+            try:
+                online_unified = await run_online_pipeline(
+                    structured_query.product,
+                    structured_query.category,
+                    structured_query.location
+                )
+                online_results = [
+                    unified_to_search_result(r, structured_query.product, structured_query.category)
+                    for r in online_unified
+                ]
+                progress_states[1]["status"] = "completed"
+                progress_states[1]["detail"] = f"Found {len(online_results)} online results"
+            except Exception as e:
+                logger.error(f"Online pipeline failed: {e}")
+                progress_states[1]["status"] = "failed"
+                progress_states[1]["detail"] = "Online search encountered an error"
+
+            # Update progress: vendor discovery
+            progress_states[2]["status"] = "active"
+            progress_states[2]["detail"] = "Discovering local shops..."
+
+            try:
+                offline_results = await run_offline_pipeline_safe(
+                    structured_query.product,
+                    structured_query.category,
+                    structured_query.location
+                )
+                progress_states[2]["status"] = "completed"
+                progress_states[2]["detail"] = f"Found {len(offline_results)} local vendors"
+                progress_states[3]["status"] = "completed"
+                progress_states[3]["detail"] = f"Called {len(offline_results)} vendors"
+                progress_states[4]["status"] = "completed"
+                progress_states[4]["detail"] = "Best prices negotiated"
+            except Exception as e:
+                logger.error(f"Offline pipeline failed: {e}")
+                progress_states[2]["status"] = "failed"
+
+            # Combine and rank
+            all_results = online_results + offline_results
+            progress_states[5]["status"] = "active"
+
+            if all_results:
+                ranked = rank_results(all_results, structured_query.intent)
+                results_list = []
+                for r in ranked:
+                    results_list.append({
+                        "id": str(uuid.uuid4()),
+                        "rank": r["rank"],
+                        "source_type": r["source_type"],
+                        "vendor_name": r["vendor_name"],
+                        "price": r["price"],
+                        "delivery_time": r["delivery_time"],
+                        "confidence": r["confidence"],
+                        "is_best_deal": r["rank"] == 1,
+                        "product_name": r["product_name"],
+                        "category": r["category"],
+                        "availability": r["availability"],
+                        "negotiated": r.get("negotiated", False),
+                        "notes": r.get("notes", ""),
+                        "score": r.get("score", 0),
+                    })
+                results = results_list
+                progress_states[5]["status"] = "completed"
+                progress_states[5]["detail"] = f"Ranked {len(results)} results by {structured_query.intent}"
+            else:
+                progress_states[5]["status"] = "failed"
+                progress_states[5]["detail"] = "No results found"
+
+            end_time = asyncio.get_event_loop().time()
+            search_time = round(end_time - start_time, 2)
+
+            search_metadata = {
+                "total_results": len(results) if results else 0,
+                "online_count": len(online_results),
+                "offline_count": len(offline_results),
+                "search_time": search_time,
+                "intent": structured_query.intent,
+            }
+
+            session["state"] = "results_ready"
+
+            # Store analytics
+            try:
+                await store_search_analytics(
+                    query=structured_query.raw_query,
+                    location=structured_query.location,
+                    structured_query=structured_query,
+                    results_count=len(results) if results else 0,
+                    search_time=search_time
+                )
+            except Exception:
+                pass
+
+        except Exception as e:
+            logger.error(f"Search execution error: {e}", exc_info=True)
+            display_message += "\n\nI encountered an error while searching. Please try again."
+            session["state"] = "collecting"
+
+    # Store assistant message
+    session["messages"].append({"role": "assistant", "content": display_message})
+
+    return {
+        "session_id": session_id,
+        "assistant_message": display_message,
+        "conversation_state": session["state"],
+        "search_triggered": search_triggered,
+        "results": results,
+        "search_metadata": search_metadata,
+        "progress_states": progress_states,
+        "parsed_query": parsed_query_dict,
+    }
+
+
+@api_router.post("/chat/reset")
+async def reset_chat(request: dict):
+    """Reset a chat session"""
+    session_id = request.get("session_id")
+    if session_id and session_id in chat_sessions:
+        del chat_sessions[session_id]
+    return {"status": "ok", "message": "Session reset"}
+
 
 def generate_mock_offline_results(product: str, category: str, location: str, count: int = 3) -> List[dict]:
     """Generate mock offline vendor results (simulating Bland.ai calls)"""
