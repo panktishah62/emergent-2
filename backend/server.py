@@ -282,69 +282,67 @@ async def search_products(request: SearchRequest):
     """Main search endpoint that processes queries and returns ranked results"""
     start_time = asyncio.get_event_loop().time()
     
+    # Extract visitor tracking info from headers
+    from fastapi import Request as FastAPIRequest
+    from starlette.requests import Request as StarletteRequest
+    
     try:
         # Step 1: Parse query with OpenAI (with retry and fallback)
         structured_query = await parse_query_with_openai(request.query, request.location)
         
-        # Step 2: Run online pipeline concurrently
-        logger.info(f"Running online pipeline for {structured_query.category}: {structured_query.product}")
-        online_unified_results = await run_online_pipeline(
-            structured_query.product,
-            structured_query.category,
-            structured_query.location
-        )
+        # Step 2: Run online and offline pipelines IN PARALLEL
+        logger.info("Running online and offline pipelines concurrently")
         
-        # Convert unified results to search result format
-        online_results = [
-            unified_to_search_result(r, structured_query.product, structured_query.category)
-            for r in online_unified_results
-        ]
-        
-        logger.info(f"Online pipeline returned {len(online_results)} results")
-        
-        # Step 3: Discover local vendors using Google Places API
-        discovered_vendors = await discover_local_vendors_with_google_places(
-            structured_query.product,
-            structured_query.category,
-            structured_query.location
-        )
-        
-        # Step 4: Call vendors using AI voice calling (Bland.ai)
-        offline_results = []
-        
-        if discovered_vendors:
-            # Make AI voice calls to discovered vendors
-            offline_results = await call_vendors_with_ai(
-                discovered_vendors,
-                structured_query.product,
-                structured_query.category
-            )
-        
-        # Fallback to mock data if no successful calls
-        if len(offline_results) < 2:
-            logger.info("Adding mock offline vendors to supplement voice call results")
-            mock_offline = generate_mock_offline_results(
+        # Create tasks for parallel execution
+        online_task = asyncio.create_task(
+            run_online_pipeline(
                 structured_query.product,
                 structured_query.category,
-                structured_query.location,
-                count=max(2, 3 - len(offline_results))
+                structured_query.location
             )
-            offline_results.extend(mock_offline)
-        
-        # Step 5: Rank results using intelligent scoring engine
-        all_results = online_results + offline_results
-        
-        logger.info(f"Ranking {len(all_results)} results by intent: {structured_query.intent}")
-        
-        # Use ranking engine to score and sort results
-        ranked_results = rank_results(all_results, structured_query.intent)
-        
-        logger.info(
-            f"Top result: {ranked_results[0]['vendor_name']} "
-            f"(score: {ranked_results[0].get('score', 0):.4f})"
         )
         
-        # Step 6: Create SearchResult objects with ranks from ranking engine
+        offline_task = asyncio.create_task(
+            run_offline_pipeline_safe(
+                structured_query.product,
+                structured_query.category,
+                structured_query.location
+            )
+        )
+        
+        # Wait for both pipelines (continue even if one fails)
+        online_results = []
+        offline_results = []
+        
+        try:
+            online_unified_results = await online_task
+            online_results = [
+                unified_to_search_result(r, structured_query.product, structured_query.category)
+                for r in online_unified_results
+            ]
+            logger.info(f"✓ Online pipeline: {len(online_results)} results")
+        except Exception as e:
+            logger.error(f"✗ Online pipeline failed: {e}", exc_info=True)
+        
+        try:
+            offline_results = await offline_task
+            logger.info(f"✓ Offline pipeline: {len(offline_results)} results")
+        except Exception as e:
+            logger.error(f"✗ Offline pipeline failed: {e}", exc_info=True)
+        
+        # Step 3: Combine and rank results using intelligent scoring
+        all_results = online_results + offline_results
+        
+        if not all_results:
+            raise HTTPException(
+                status_code=500,
+                detail="Both pipelines failed. Please try again."
+            )
+        
+        logger.info(f"Ranking {len(all_results)} results by intent: {structured_query.intent}")
+        ranked_results = rank_results(all_results, structured_query.intent)
+        
+        # Step 4: Create SearchResult objects
         search_results = []
         for result in ranked_results:
             search_results.append(SearchResult(
@@ -364,8 +362,20 @@ async def search_products(request: SearchRequest):
         end_time = asyncio.get_event_loop().time()
         search_time = round(end_time - start_time, 2)
         
-        # Step 7: Return response
-        return SearchResponse(
+        # Step 5: Store search in MongoDB analytics
+        try:
+            await store_search_analytics(
+                query=request.query,
+                location=request.location,
+                structured_query=structured_query,
+                results_count=len(search_results),
+                search_time=search_time
+            )
+        except Exception as e:
+            logger.error(f"Failed to store analytics: {e}")
+        
+        # Step 6: Return response
+        response = SearchResponse(
             results=search_results,
             total_results=len(search_results),
             online_count=len(online_results),
@@ -374,8 +384,170 @@ async def search_products(request: SearchRequest):
             parsed_query=structured_query
         )
         
+        logger.info(
+            f"Search complete: {len(search_results)} results in {search_time}s "
+            f"({len(online_results)} online, {len(offline_results)} offline)"
+        )
+        
+        return response
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error in search endpoint: {e}")
+        logger.error(f"Critical error in search endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def run_offline_pipeline_safe(product: str, category: str, location: str) -> List[dict]:
+    """
+    Run offline pipeline with error handling
+    Returns list of offline results or empty list if fails
+    """
+    try:
+        # Discover vendors
+        discovered_vendors = await discover_local_vendors_with_google_places(
+            product, category, location
+        )
+        
+        if not discovered_vendors:
+            logger.warning("No vendors discovered for offline pipeline")
+            return []
+        
+        # Call vendors with AI
+        offline_results = await call_vendors_with_ai(
+            discovered_vendors, product, category
+        )
+        
+        # Add mock fallback if needed
+        if len(offline_results) < 2:
+            logger.info("Supplementing with mock offline vendors")
+            mock_offline = generate_mock_offline_results(
+                product, category, location,
+                count=max(2, 3 - len(offline_results))
+            )
+            offline_results.extend(mock_offline)
+        
+        return offline_results
+        
+    except Exception as e:
+        logger.error(f"Offline pipeline error: {e}")
+        # Return mock data as fallback
+        return generate_mock_offline_results(product, category, location, count=3)
+
+
+async def store_search_analytics(
+    query: str,
+    location: Optional[str],
+    structured_query: StructuredQuery,
+    results_count: int,
+    search_time: float
+):
+    """Store search query in MongoDB analytics collection"""
+    try:
+        analytics_collection = db["analytics"]
+        
+        analytics_doc = {
+            "query": query,
+            "location": location,
+            "parsed_query": structured_query.model_dump(),
+            "results_count": results_count,
+            "search_time": search_time,
+            "timestamp": datetime.now(timezone.utc),
+        }
+        
+        await analytics_collection.insert_one(analytics_doc)
+        logger.debug(f"Stored analytics for query: {query}")
+        
+    except Exception as e:
+        logger.error(f"Failed to store analytics: {e}")
+
+
+@api_router.post("/webhooks/voice")
+async def voice_webhook(payload: dict):
+    """
+    Webhook endpoint for Bland.ai call completion callbacks
+    Stores call data in MongoDB
+    """
+    try:
+        logger.info(f"Received voice webhook: {payload.get('call_id')}")
+        
+        voice_calls_collection = db["voice_calls"]
+        
+        webhook_doc = {
+            "call_id": payload.get("call_id"),
+            "status": payload.get("status"),
+            "transcript": payload.get("concatenated_transcript"),
+            "call_length": payload.get("call_length"),
+            "metadata": payload.get("metadata", {}),
+            "received_at": datetime.now(timezone.utc),
+            "raw_payload": payload
+        }
+        
+        await voice_calls_collection.insert_one(webhook_doc)
+        logger.info(f"Stored webhook data for call: {payload.get('call_id')}")
+        
+        return {"status": "received"}
+        
+    except Exception as e:
+        logger.error(f"Error processing voice webhook: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_router.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "ok",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "service": "PriceHunter API"
+    }
+
+
+@api_router.get("/stats")
+async def get_stats():
+    """
+    Internal stats endpoint for analytics
+    Returns usage metrics
+    """
+    try:
+        analytics_collection = db["analytics"]
+        
+        # Total searches
+        total_searches = await analytics_collection.count_documents({})
+        
+        # Searches today
+        today_start = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        searches_today = await analytics_collection.count_documents({
+            "timestamp": {"$gte": today_start}
+        })
+        
+        # Top queries (aggregation)
+        top_queries_pipeline = [
+            {"$group": {
+                "_id": "$query",
+                "count": {"$sum": 1}
+            }},
+            {"$sort": {"count": -1}},
+            {"$limit": 10}
+        ]
+        
+        top_queries_cursor = analytics_collection.aggregate(top_queries_pipeline)
+        top_queries = []
+        async for doc in top_queries_cursor:
+            top_queries.append({
+                "query": doc["_id"],
+                "count": doc["count"]
+            })
+        
+        return {
+            "total_searches": total_searches,
+            "searches_today": searches_today,
+            "top_queries": top_queries
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.get("/")

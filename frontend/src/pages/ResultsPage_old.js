@@ -9,16 +9,6 @@ import { ArrowLeft, Search } from 'lucide-react';
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-// Visitor ID management
-const getVisitorId = () => {
-  let visitorId = localStorage.getItem('visitor_id');
-  if (!visitorId) {
-    visitorId = 'visitor_' + Math.random().toString(36).substring(2, 15) + Date.now();
-    localStorage.setItem('visitor_id', visitorId);
-  }
-  return visitorId;
-};
-
 const ResultsPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
@@ -44,35 +34,25 @@ const ResultsPage = () => {
     }
 
     const performSearch = async () => {
-      let stageInterval;
       try {
-        // Get visitor ID
-        const visitorId = getVisitorId();
-        
-        // Cycle through stages during loading
-        stageInterval = setInterval(() => {
-          setCurrentStage(prev => (prev + 1) % stages.length);
-        }, 3000); // Cycle every 3 seconds to keep user engaged
+        // Simulate stage progression
+        for (let i = 0; i < stages.length; i++) {
+          setCurrentStage(i);
+          await new Promise(resolve => setTimeout(resolve, 1200));
+        }
 
-        // Perform actual API call with extended timeout and visitor tracking
+        // Perform actual API call
         const response = await axios.post(`${API}/search`, {
           query,
           location: searchLocation
-        }, {
-          headers: {
-            'X-Visitor-ID': visitorId
-          },
-          timeout: 120000 // 120 second timeout for voice calls
         });
 
-        clearInterval(stageInterval);
         setResults(response.data.results);
         setSearchData(response.data);
         setLoading(false);
       } catch (err) {
-        if (stageInterval) clearInterval(stageInterval);
         console.error('Search error:', err);
-        setError(err.response?.data?.detail || err.message || 'Failed to fetch results');
+        setError(err.response?.data?.detail || 'Failed to fetch results');
         setLoading(false);
       }
     };
