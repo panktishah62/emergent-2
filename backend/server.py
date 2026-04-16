@@ -584,8 +584,8 @@ def generate_mock_offline_results(product: str, category: str, location: str, co
             "Mehta Electronics", "Desai General Store", "Joshi Bazaar",
             "Rao Provisions"
         ])
-        price_variation = random.uniform(0.80, 1.10)  # Offline can be cheaper or slightly more
-        price = round(base_price * price_variation, 2)
+        price_variation = random.uniform(0.80, 1.10)
+        price = round(base_price * price_variation / 100) * 100
         
         delivery_options = [
             "Pick up now",
@@ -1008,7 +1008,7 @@ async def _run_offline_pipeline_inner(product: str, category: str, location: str
     mock_results = []
     for vendor in discovered_vendors:
         base_price = random.randint(5000, 150000) if category == "electronics" else random.randint(50, 5000)
-        price = round(base_price * random.uniform(0.8, 1.1), 2)
+        price = round(base_price * random.uniform(0.8, 1.1) / 100) * 100
         mock_results.append({
             "source_type": "OFFLINE",
             "vendor_name": vendor["name"],

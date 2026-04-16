@@ -247,7 +247,7 @@ def get_base_price(category: str, product: str) -> float:
         # Default: mid-range
         base = random.uniform(min_price * 1.5, max_price * 0.4)
     
-    return round(base, 2)
+    return round(base / 100) * 100
 
 
 async def search_platform(
@@ -269,7 +269,7 @@ async def search_platform(
     
     # Price variation ±15%
     price_variation = random.uniform(0.85, 1.15)
-    price = round(base_price * price_variation, 2)
+    price = round(base_price * price_variation / 100) * 100
     
     # Random delivery time from platform's options
     delivery_time = random.choice(platform.delivery_times)

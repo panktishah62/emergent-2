@@ -75,7 +75,7 @@ class VoiceCallingService:
         }
         
         min_price, max_price = price_ranges.get(category, (100, 5000))
-        price = round(random.uniform(min_price, max_price), 2)
+        price = round(random.uniform(min_price, max_price) / 100) * 100
         
         # Realistic transcript templates
         transcripts = [

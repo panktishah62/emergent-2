@@ -84,16 +84,15 @@ const ChatPage = () => {
     return () => clearInterval(interval);
   }, [animatingProgress, progressStates.length]);
 
-  // Trigger paywall after first successful results display
+  // Trigger paywall after every successful results display
   useEffect(() => {
-    if (showResults && results && results.length > 0 && !isPremium && !hasShownPaywall) {
+    if (showResults && results && results.length > 0 && !isPremium) {
       const timer = setTimeout(() => {
         setShowPaywall(true);
-        setHasShownPaywall(true);
       }, 2000); // 2s after results appear
       return () => clearTimeout(timer);
     }
-  }, [showResults, results, isPremium, hasShownPaywall]);
+  }, [showResults, results, isPremium]);
 
   // Razorpay payment handler
   const handlePayment = async () => {
