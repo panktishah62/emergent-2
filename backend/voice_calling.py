@@ -444,50 +444,98 @@ Example: {{"price": 15000, "availability": true, "negotiated": true, "delivery_t
         self,
         vendors: List[Dict],
         product: str,
-        category: str
+        category: str,
+        sequential: bool = False,
+        delay_between_calls: int = 5
     ) -> List[CallResult]:
         """
-        Call multiple vendors concurrently
-        Handles failures gracefully - returns results from successful calls
+        Call multiple vendors concurrently OR sequentially
         
         Args:
             vendors: List of dicts with 'name' and 'phone_number' keys
             product: Product to inquire about
             category: Product category
+            sequential: If True, calls one at a time (for rate limits)
+            delay_between_calls: Seconds to wait between sequential calls
         
         Returns:
             List of CallResult objects
         """
-        logger.info(f"Starting concurrent calls to {len(vendors)} vendors")
+        logger.info(f"Starting {'sequential' if sequential else 'concurrent'} calls to {len(vendors)} vendors")
         
-        # Create call tasks
-        tasks = [
-            self.call_vendor(
-                vendor["name"],
-                vendor["phone_number"],
-                product,
-                category
+        if sequential:
+            # SEQUENTIAL MODE: Call one vendor at a time
+            results = []
+            for i, vendor in enumerate(vendors, 1):
+                if not vendor.get("phone_number"):
+                    logger.warning(f"Skipping {vendor.get('name')} - no phone number")
+                    continue
+                
+                logger.info(f"[{i}/{len(vendors)}] Calling {vendor['name']} sequentially...")
+                
+                try:
+                    result = await self.call_vendor(
+                        vendor["name"],
+                        vendor["phone_number"],
+                        product,
+                        category
+                    )
+                    results.append(result)
+                    
+                    logger.info(
+                        f"[{i}/{len(vendors)}] Completed: {result.status} "
+                        f"(price: {result.price}, confidence: {result.confidence})"
+                    )
+                    
+                    # Wait before next call (except after last one)
+                    if i < len(vendors) and delay_between_calls > 0:
+                        logger.info(f"Waiting {delay_between_calls}s before next call...")
+                        await asyncio.sleep(delay_between_calls)
+                        
+                except Exception as e:
+                    logger.error(f"[{i}/{len(vendors)}] Error calling {vendor['name']}: {e}")
+                    # Create failed result but continue with next vendor
+                    results.append(CallResult(
+                        vendor_name=vendor["name"],
+                        vendor_phone=vendor["phone_number"],
+                        product=product,
+                        status="failed",
+                        notes=f"Error: {str(e)[:50]}",
+                        confidence=0.0
+                    ))
+            
+            logger.info(f"Sequential calls completed: {len(results)} vendors called")
+            return results
+            
+        else:
+            # CONCURRENT MODE: Call all vendors simultaneously (original behavior)
+            tasks = [
+                self.call_vendor(
+                    vendor["name"],
+                    vendor["phone_number"],
+                    product,
+                    category
+                )
+                for vendor in vendors
+                if vendor.get("phone_number")
+            ]
+            
+            # Run all calls concurrently
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Filter out exceptions and collect successful results
+            successful_results = []
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"Vendor call {i} raised exception: {result}")
+                    continue
+                successful_results.append(result)
+            
+            logger.info(
+                f"Completed {len(successful_results)}/{len(vendors)} vendor calls successfully"
             )
-            for vendor in vendors
-            if vendor.get("phone_number")
-        ]
-        
-        # Run all calls concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # Filter out exceptions and collect successful results
-        successful_results = []
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                logger.error(f"Vendor call {i} raised exception: {result}")
-                continue
-            successful_results.append(result)
-        
-        logger.info(
-            f"Completed {len(successful_results)}/{len(vendors)} vendor calls successfully"
-        )
-        
-        return successful_results
+            
+            return successful_results
 
 
 # Convenience function
@@ -497,10 +545,16 @@ async def call_vendors_for_pricing(
     category: str,
     bland_api_key: Optional[str] = None,
     openai_api_key: Optional[str] = None,
-    mock_mode: bool = True
+    mock_mode: bool = True,
+    sequential: bool = False,
+    delay_between_calls: int = 5
 ) -> List[CallResult]:
     """
     Convenience function to call vendors and get pricing
+    
+    Args:
+        sequential: If True, calls one vendor at a time (recommended for rate limits)
+        delay_between_calls: Seconds to wait between sequential calls
     
     Returns list of CallResult objects
     """
@@ -510,4 +564,10 @@ async def call_vendors_for_pricing(
         mock_mode=mock_mode
     )
     
-    return await service.call_multiple_vendors(vendors, product, category)
+    return await service.call_multiple_vendors(
+        vendors, 
+        product, 
+        category,
+        sequential=sequential,
+        delay_between_calls=delay_between_calls
+    )

@@ -399,10 +399,10 @@ async def search_products(request: SearchRequest):
 
 async def run_offline_pipeline_safe(product: str, category: str, location: str) -> List[dict]:
     """
-    Run offline pipeline with HYBRID approach:
-    - Make REAL Bland.ai calls to top 2 vendors
+    Run offline pipeline with HYBRID + SEQUENTIAL approach:
+    - Make REAL Bland.ai calls to top 3 vendors SEQUENTIALLY (one at a time)
     - Use MOCK data for remaining vendors
-    This stays within rate limits while providing real data
+    - Wait for each call to complete before starting next (avoids rate limits)
     """
     try:
         # Discover vendors
@@ -415,28 +415,59 @@ async def run_offline_pipeline_safe(product: str, category: str, location: str) 
             return generate_mock_offline_results(product, category, location, count=3)
         
         # HYBRID APPROACH: Split vendors into real and mock
-        real_call_limit = 2  # Make real calls to top 2 only
+        real_call_limit = 3  # Make real calls to top 3 vendors SEQUENTIALLY
         vendors_for_real_calls = discovered_vendors[:real_call_limit]
         vendors_for_mock = discovered_vendors[real_call_limit:]
         
         logger.info(
-            f"HYBRID MODE: Real calls to {len(vendors_for_real_calls)} vendors, "
-            f"mock data for {len(vendors_for_mock)} vendors"
+            f"SEQUENTIAL HYBRID MODE: Real calls to {len(vendors_for_real_calls)} vendors "
+            f"(one at a time), mock data for {len(vendors_for_mock)} vendors"
         )
         
-        # Make REAL calls to top 2 vendors
+        # Make REAL SEQUENTIAL calls to top 3 vendors
         real_results = []
         if vendors_for_real_calls and not MOCK_VOICE_CALLS:
-            logger.info(f"Making REAL Bland.ai calls to top {len(vendors_for_real_calls)} vendors...")
-            real_results = await call_vendors_with_ai(
-                vendors_for_real_calls, product, category
+            logger.info(
+                f"Making REAL Bland.ai calls SEQUENTIALLY to top {len(vendors_for_real_calls)} vendors "
+                f"(waiting for each to complete before next)..."
             )
-            logger.info(f"Real calls completed: {len(real_results)} results")
+            
+            # Call with sequential=True and delay between calls
+            call_results = await call_vendors_for_pricing(
+                vendors=vendors_for_real_calls,
+                product=product,
+                category=category,
+                bland_api_key=BLAND_API_KEY,
+                openai_api_key=EMERGENT_LLM_KEY,
+                mock_mode=False,
+                sequential=True,  # SEQUENTIAL MODE
+                delay_between_calls=10  # Wait 10 seconds between calls
+            )
+            
+            # Convert CallResult to search result format
+            for call_result in call_results:
+                if call_result.price and call_result.availability:
+                    real_results.append({
+                        "source_type": "OFFLINE",
+                        "vendor_name": call_result.vendor_name,
+                        "price": call_result.price,
+                        "delivery_time": call_result.delivery_time or "Contact vendor",
+                        "confidence": call_result.confidence,
+                        "product_name": product,
+                        "category": category,
+                        "availability": "In Stock" if call_result.availability else "Out of Stock"
+                    })
+                    logger.info(
+                        f"✓ Real call result: {call_result.vendor_name} - ₹{call_result.price} "
+                        f"({'negotiated' if call_result.negotiated else 'fixed'})"
+                    )
+            
+            logger.info(f"Sequential real calls completed: {len(real_results)} successful results")
         
         # Generate MOCK data for remaining vendors
         mock_results = []
         if vendors_for_mock:
-            logger.info(f"Generating mock data for {len(vendors_for_mock)} vendors...")
+            logger.info(f"Generating mock data for {len(vendors_for_mock)} remaining vendors...")
             for vendor in vendors_for_mock:
                 # Generate mock result with vendor's real name
                 base_price = random.randint(5000, 150000) if category == "electronics" else random.randint(50, 5000)
@@ -471,8 +502,7 @@ async def run_offline_pipeline_safe(product: str, category: str, location: str) 
         
         logger.info(
             f"Offline pipeline complete: {len(all_offline_results)} total "
-            f"({len(real_results)} real, {len(mock_results)} mock from discovered, "
-            f"{max(0, 3 - len(real_results) - len(mock_results))} generic mock)"
+            f"({len(real_results)} real sequential, {len(mock_results)} mock from discovered)"
         )
         
         return all_offline_results
