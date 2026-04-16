@@ -17,6 +17,7 @@ import phonenumbers
 from online_pipeline import run_online_pipeline, UnifiedResult
 from vendor_discovery import discover_vendors, Vendor
 from voice_calling import call_vendors_for_pricing, CallResult
+from ranking_engine import rank_results
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -330,52 +331,34 @@ async def search_products(request: SearchRequest):
             )
             offline_results.extend(mock_offline)
         
-        # Step 5: Combine and rank results based on intent
+        # Step 5: Rank results using intelligent scoring engine
         all_results = online_results + offline_results
         
-        intent = structured_query.intent
-        if intent == "cheapest":
-            all_results.sort(key=lambda x: x["price"])
-        elif intent == "fastest":
-            # Sort by delivery time (prioritize same day, express)
-            delivery_priority = {
-                "10 mins": 1,
-                "12 mins": 1,
-                "15 mins": 1,
-                "20 mins": 2,
-                "Express delivery (2 hours)": 3,
-                "Pick up now": 3,
-                "Local delivery (1-2 hours)": 4,
-                "2-3 hours": 4,
-                "Pick up in 30 mins": 2,
-                "Available in 30 mins": 2,
-                "Same day delivery": 5,
-                "24 hours": 6,
-                "Next day delivery": 7,
-                "1-2 days": 8,
-                "2-3 days": 9,
-                "3-4 days": 10,
-                "3-5 days": 11,
-                "4-5 days": 12,
-                "4-6 days": 13,
-                "5-7 days": 14,
-            }
-            all_results.sort(key=lambda x: delivery_priority.get(x["delivery_time"], 20))
-        elif intent == "best_value":
-            # Sort by a combination of price and confidence
-            all_results.sort(key=lambda x: x["price"] / x["confidence"])
-        else:  # nearest
-            # Prioritize offline vendors
-            all_results.sort(key=lambda x: (0 if x["source_type"] == "OFFLINE" else 1, x["price"]))
+        logger.info(f"Ranking {len(all_results)} results by intent: {structured_query.intent}")
         
-        # Step 6: Create SearchResult objects with ranks
+        # Use ranking engine to score and sort results
+        ranked_results = rank_results(all_results, structured_query.intent)
+        
+        logger.info(
+            f"Top result: {ranked_results[0]['vendor_name']} "
+            f"(score: {ranked_results[0].get('score', 0):.4f})"
+        )
+        
+        # Step 6: Create SearchResult objects with ranks from ranking engine
         search_results = []
-        for idx, result in enumerate(all_results):
+        for result in ranked_results:
             search_results.append(SearchResult(
                 id=str(uuid.uuid4()),
-                rank=idx + 1,
-                is_best_deal=(idx == 0),
-                **result
+                rank=result["rank"],
+                is_best_deal=(result["rank"] == 1),
+                source_type=result["source_type"],
+                vendor_name=result["vendor_name"],
+                price=result["price"],
+                delivery_time=result["delivery_time"],
+                confidence=result["confidence"],
+                product_name=result["product_name"],
+                category=result["category"],
+                availability=result["availability"]
             ))
         
         end_time = asyncio.get_event_loop().time()
