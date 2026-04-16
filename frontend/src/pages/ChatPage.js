@@ -295,14 +295,30 @@ const ChatPage = () => {
               fontFamily: "'JetBrains Mono', monospace"
             }}>AI</span>
           </div>
-          <button onClick={resetChat} data-testid="reset-chat-btn"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
-            style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#8BA3CB' }}
-            onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(0,255,136,0.3)'; e.currentTarget.style.color = '#00FF88'; }}
-            onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#8BA3CB'; }}
-          >
-            <RotateCcw className="w-3.5 h-3.5" /> New Search
-          </button>
+          <div className="flex items-center gap-2">
+            {!isPremium && (
+              <button onClick={() => setShowPaywall(true)} data-testid="unlimited-searches-btn"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all duration-200"
+                style={{
+                  background: 'linear-gradient(135deg, #00FF88, #00CC66)',
+                  color: '#0A0F1C',
+                  boxShadow: '0 0 12px rgba(0,255,136,0.3)',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.boxShadow = '0 0 20px rgba(0,255,136,0.5)'; }}
+                onMouseLeave={e => { e.currentTarget.style.boxShadow = '0 0 12px rgba(0,255,136,0.3)'; }}
+              >
+                <Crown className="w-3.5 h-3.5" /> Unlimited Searches
+              </button>
+            )}
+            <button onClick={resetChat} data-testid="reset-chat-btn"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200"
+              style={{ backgroundColor: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#8BA3CB' }}
+              onMouseEnter={e => { e.currentTarget.style.borderColor = 'rgba(0,255,136,0.3)'; e.currentTarget.style.color = '#00FF88'; }}
+              onMouseLeave={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#8BA3CB'; }}
+            >
+              <RotateCcw className="w-3.5 h-3.5" /> New Search
+            </button>
+          </div>
         </div>
       </header>
 
