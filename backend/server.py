@@ -14,6 +14,7 @@ import random
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 import googlemaps
 import phonenumbers
+from online_pipeline import run_online_pipeline, UnifiedResult
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -73,43 +74,19 @@ class SearchResponse(BaseModel):
     search_time: float
     parsed_query: StructuredQuery
 
-# Mock data generators
-ONLINE_PLATFORMS = [
-    "Amazon India", "Flipkart", "Blinkit", "Zepto", 
-    "Croma", "BigBasket", "Myntra", "Reliance Digital",
-    "Vijay Sales", "JioMart"
-]
 
-def generate_mock_online_results(product: str, category: str, count: int = 5) -> List[dict]:
-    """Generate mock online platform results"""
-    results = []
-    base_price = random.randint(1000, 50000) if category.lower() in ["electronics", "phone", "laptop"] else random.randint(50, 5000)
-    
-    for i in range(count):
-        vendor = random.choice(ONLINE_PLATFORMS)
-        price_variation = random.uniform(0.85, 1.15)
-        price = round(base_price * price_variation, 2)
-        
-        delivery_options = [
-            "Same day delivery",
-            "Next day delivery",
-            "2-3 days",
-            "3-5 days",
-            "Express delivery (2 hours)"
-        ]
-        
-        results.append({
-            "source_type": "ONLINE",
-            "vendor_name": vendor,
-            "price": price,
-            "delivery_time": random.choice(delivery_options),
-            "confidence": random.uniform(0.75, 0.98),
-            "product_name": product,
-            "category": category,
-            "availability": "In Stock"
-        })
-    
-    return results
+def unified_to_search_result(unified: UnifiedResult, product: str, category: str) -> dict:
+    """Convert UnifiedResult to SearchResult dict format"""
+    return {
+        "source_type": "ONLINE" if unified.source_type == "online" else "OFFLINE",
+        "vendor_name": unified.name,
+        "price": unified.price,
+        "delivery_time": unified.delivery_time,
+        "confidence": unified.confidence,
+        "product_name": product,
+        "category": category,
+        "availability": "In Stock" if unified.availability else "Out of Stock"
+    }
 
 def generate_mock_offline_results(product: str, category: str, location: str, count: int = 3) -> List[dict]:
     """Generate mock offline vendor results (simulating Bland.ai calls)"""
@@ -345,12 +322,21 @@ async def search_products(request: SearchRequest):
         # Step 1: Parse query with OpenAI (with retry and fallback)
         structured_query = await parse_query_with_openai(request.query, request.location)
         
-        # Step 2: Generate mock online results
-        online_results = generate_mock_online_results(
+        # Step 2: Run online pipeline concurrently
+        logger.info(f"Running online pipeline for {structured_query.category}: {structured_query.product}")
+        online_unified_results = await run_online_pipeline(
             structured_query.product,
             structured_query.category,
-            count=random.randint(4, 7)
+            structured_query.location
         )
+        
+        # Convert unified results to search result format
+        online_results = [
+            unified_to_search_result(r, structured_query.product, structured_query.category)
+            for r in online_unified_results
+        ]
+        
+        logger.info(f"Online pipeline returned {len(online_results)} results")
         
         # Step 3: Discover local vendors using Google Places API
         discovered_vendors = await discover_local_vendors_with_google_places(
@@ -390,17 +376,28 @@ async def search_products(request: SearchRequest):
         elif intent == "fastest":
             # Sort by delivery time (prioritize same day, express)
             delivery_priority = {
-                "Express delivery (2 hours)": 1,
-                "Pick up now": 1,
-                "Local delivery (1-2 hours)": 2,
-                "Pick up in 30 mins": 1,
-                "Available in 30 mins": 1,
-                "Same day delivery": 3,
-                "Next day delivery": 4,
-                "2-3 days": 5,
-                "3-5 days": 6
+                "10 mins": 1,
+                "12 mins": 1,
+                "15 mins": 1,
+                "20 mins": 2,
+                "Express delivery (2 hours)": 3,
+                "Pick up now": 3,
+                "Local delivery (1-2 hours)": 4,
+                "2-3 hours": 4,
+                "Pick up in 30 mins": 2,
+                "Available in 30 mins": 2,
+                "Same day delivery": 5,
+                "24 hours": 6,
+                "Next day delivery": 7,
+                "1-2 days": 8,
+                "2-3 days": 9,
+                "3-4 days": 10,
+                "3-5 days": 11,
+                "4-5 days": 12,
+                "4-6 days": 13,
+                "5-7 days": 14,
             }
-            all_results.sort(key=lambda x: delivery_priority.get(x["delivery_time"], 10))
+            all_results.sort(key=lambda x: delivery_priority.get(x["delivery_time"], 20))
         elif intent == "best_value":
             # Sort by a combination of price and confidence
             all_results.sort(key=lambda x: x["price"] / x["confidence"])
