@@ -25,6 +25,7 @@ const ChatPage = () => {
   const [searchMeta, setSearchMeta] = useState(null);
   const [parsedQuery, setParsedQuery] = useState(null);
   const [showResults, setShowResults] = useState(false);
+  const [waitingForResults, setWaitingForResults] = useState(false);
 
   const messagesEndRef = useRef(null);
   const inputRef = useRef(null);
@@ -61,11 +62,13 @@ const ChatPage = () => {
       idx++;
       if (idx >= progressStates.length) {
         clearInterval(interval);
-        // All progress done — reveal results
+        // All progress done — show waiting state, then reveal results after 1 minute
+        setWaitingForResults(true);
         setTimeout(() => {
+          setWaitingForResults(false);
           setShowResults(true);
           setAnimatingProgress(false);
-        }, 600);
+        }, 60000);
       } else {
         setCurrentProgressIdx(idx);
       }
@@ -166,6 +169,7 @@ const ChatPage = () => {
     setParsedQuery(null);
     setDiscoveredVendors(null);
     setShowResults(false);
+    setWaitingForResults(false);
     setAnimatingProgress(false);
     setCurrentProgressIdx(-1);
     setConversationState('collecting');
@@ -240,6 +244,11 @@ const ChatPage = () => {
               states={progressStates}
               currentIdx={currentProgressIdx}
             />
+          )}
+
+          {/* Waiting state — after progress finishes, before results appear */}
+          {waitingForResults && !showResults && (
+            <WaitingForResults />
           )}
 
           {/* Stage 3: Results (only after progress completes) */}
@@ -478,6 +487,38 @@ const ProgressAnimation = ({ states, currentIdx }) => {
     </motion.div>
   );
 };
+
+
+/* ===== Waiting For Results (1-min delay indicator) ===== */
+const WaitingForResults = () => (
+  <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}
+    className="flex items-start gap-3" data-testid="waiting-for-results"
+  >
+    <AssistantAvatar />
+    <div className="px-4 py-4 rounded-2xl rounded-tl-sm" style={{
+      backgroundColor: 'rgba(19,27,47,0.8)', border: '1px solid rgba(0,229,255,0.15)'
+    }}>
+      <div className="flex items-center gap-2.5 mb-2">
+        <Loader2 className="w-4 h-4 animate-spin" style={{ color: '#00E5FF' }} />
+        <span className="text-sm font-medium" style={{ color: '#00E5FF', fontFamily: "'Inter', sans-serif" }}>
+          Compiling results...
+        </span>
+      </div>
+      <p className="text-xs" style={{ color: '#8BA3CB', fontFamily: "'Inter', sans-serif" }}>
+        Analyzing prices and ranking the best deals for you. This may take a moment.
+      </p>
+      {/* Pulsing bar */}
+      <div className="mt-3 w-full h-1 rounded-full overflow-hidden" style={{ backgroundColor: 'rgba(255,255,255,0.06)' }}>
+        <motion.div
+          animate={{ x: ['-100%', '100%'] }}
+          transition={{ duration: 2, repeat: Infinity, ease: 'easeInOut' }}
+          className="h-full w-1/3 rounded-full"
+          style={{ background: 'linear-gradient(90deg, transparent, #00E5FF, transparent)' }}
+        />
+      </div>
+    </div>
+  </motion.div>
+);
 
 
 /* ===== Summary Message (after progress) ===== */
