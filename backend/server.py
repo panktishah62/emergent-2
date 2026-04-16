@@ -16,6 +16,7 @@ import googlemaps
 import phonenumbers
 from online_pipeline import run_online_pipeline, UnifiedResult
 from vendor_discovery import discover_vendors, Vendor
+from voice_calling import call_vendors_for_pricing, CallResult
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -41,6 +42,11 @@ logger = logging.getLogger(__name__)
 # Initialize Google Places API client
 google_places_key = os.environ.get('GOOGLE_PLACES_API_KEY')
 gmaps = googlemaps.Client(key=google_places_key) if google_places_key else None
+
+# Voice calling configuration
+BLAND_API_KEY = os.environ.get('BLAND_API_KEY')
+EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
+MOCK_VOICE_CALLS = os.environ.get('MOCK_VOICE_CALLS', 'true').lower() == 'true'
 
 # Pydantic Models
 class SearchRequest(BaseModel):
@@ -151,61 +157,49 @@ async def discover_local_vendors_with_google_places(product: str, category: str,
     logger.info(f"Discovered {len(vendor_dicts)} vendors ({sum(1 for v in vendors if not v.is_mock)} real, {sum(1 for v in vendors if v.is_mock)} mock)")
     return vendor_dicts
 
-async def simulate_bland_ai_vendor_calls(vendors: List[dict], product: str, category: str) -> List[dict]:
+async def call_vendors_with_ai(vendors: List[dict], product: str, category: str) -> List[dict]:
     """
-    Simulate Bland.ai voice calls to vendors (real integration ready when needed)
-    For now, generates realistic pricing data as if calls were made
+    Call vendors using AI voice calling (Bland.ai) or mock mode
+    Returns list of results with pricing and availability
     """
-    bland_api_key = os.environ.get('BLAND_API_KEY')
-    
-    if not bland_api_key or not vendors:
-        logger.info("Bland.ai not configured or no vendors to call, using mock responses")
+    if not vendors:
+        logger.info("No vendors to call")
         return []
     
+    logger.info(f"Calling {len(vendors)} vendors (MOCK_MODE={MOCK_VOICE_CALLS})")
+    
+    # Call all vendors concurrently using voice calling service
+    call_results = await call_vendors_for_pricing(
+        vendors=vendors,
+        product=product,
+        category=category,
+        bland_api_key=BLAND_API_KEY,
+        openai_api_key=EMERGENT_LLM_KEY,
+        mock_mode=MOCK_VOICE_CALLS
+    )
+    
+    # Convert CallResult to dict format for search results
     results = []
-    base_price = random.randint(1000, 50000) if category.lower() in ["electronics", "phone", "laptop"] else random.randint(50, 5000)
+    for call_result in call_results:
+        if call_result.price and call_result.availability:
+            results.append({
+                "source_type": "OFFLINE",
+                "vendor_name": call_result.vendor_name,
+                "price": call_result.price,
+                "delivery_time": call_result.delivery_time or "Contact vendor",
+                "confidence": call_result.confidence,
+                "product_name": product,
+                "category": category,
+                "availability": "In Stock" if call_result.availability else "Out of Stock"
+            })
+            logger.info(
+                f"✓ {call_result.vendor_name}: ₹{call_result.price} "
+                f"({'negotiated' if call_result.negotiated else 'fixed'})"
+            )
+        else:
+            logger.info(f"✗ {call_result.vendor_name}: No price/unavailable")
     
-    for vendor in vendors:
-        # NOTE: Real Bland.ai integration would make actual voice calls here
-        # For now, simulating the expected response from a call
-        
-        if not vendor.get("phone_number"):
-            logger.info(f"No phone number for {vendor['name']}, skipping call simulation")
-            continue
-        
-        # Simulate call response
-        price_variation = random.uniform(0.75, 1.05)
-        price = round(base_price * price_variation, 2)
-        
-        delivery_options = [
-            "Pick up now",
-            "Local delivery (1-2 hours)",
-            "Same day delivery",
-            "Available in 30 mins"
-        ]
-        
-        availability_options = ["In Stock", "Available", "Limited Stock"]
-        
-        results.append({
-            "source_type": "OFFLINE",
-            "vendor_name": vendor["name"],
-            "price": price,
-            "delivery_time": random.choice(delivery_options),
-            "confidence": random.uniform(0.75, 0.92),
-            "product_name": product,
-            "category": category,
-            "availability": random.choice(availability_options)
-        })
-        
-        # Real implementation would look like:
-        # call_response = await make_bland_ai_call(
-        #     phone_number=vendor["phone_number"],
-        #     vendor_name=vendor["name"],
-        #     product=product
-        # )
-        # results.append(parse_bland_ai_response(call_response))
-    
-    logger.info(f"Simulated calls to {len(results)} vendors")
+    logger.info(f"Successfully got pricing from {len(results)}/{len(call_results)} calls")
     return results
 
 async def parse_query_with_openai(query: str, location: Optional[str]) -> StructuredQuery:
@@ -314,20 +308,20 @@ async def search_products(request: SearchRequest):
             structured_query.location
         )
         
-        # Step 4: Call vendors using Bland.ai (or simulate if not enough vendors)
+        # Step 4: Call vendors using AI voice calling (Bland.ai)
         offline_results = []
         
         if discovered_vendors:
-            # Use real vendors from Google Places with simulated Bland.ai calls
-            offline_results = await simulate_bland_ai_vendor_calls(
+            # Make AI voice calls to discovered vendors
+            offline_results = await call_vendors_with_ai(
                 discovered_vendors,
                 structured_query.product,
                 structured_query.category
             )
         
-        # Fallback to mock data if no real vendors found
+        # Fallback to mock data if no successful calls
         if len(offline_results) < 2:
-            logger.info("Adding mock offline vendors to supplement real data")
+            logger.info("Adding mock offline vendors to supplement voice call results")
             mock_offline = generate_mock_offline_results(
                 structured_query.product,
                 structured_query.category,
