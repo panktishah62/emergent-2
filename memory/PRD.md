@@ -1,61 +1,58 @@
 # PriceHunter — Product Requirements Document
 
 ## Problem Statement
-Build a full-stack web application called PriceHunter — a hybrid price comparison engine for India. It parses natural language queries, runs an Online Pipeline (simulated e-commerce), runs an Offline Pipeline (Google Places discovery + Bland.ai voice calls to vendors), and ranks them based on intent (cheapest, fastest, best_value, nearest).
-
-**UX Requirement:** Chat-first UX guided shopping assistant with staged display flow.
+A hybrid price comparison engine for India with a chat-first UX. Conversational chatbot collects product info, makes real vendor calls via Bland.ai, discovers vendors via Google Places, simulates online prices, and ranks by intent. Monetized via Razorpay Rs 99 premium paywall.
 
 ## Architecture
 - **Frontend:** React + Tailwind + Framer Motion (dark neon-green theme)
 - **Backend:** FastAPI (Python, async)
-- **Database:** MongoDB (analytics, voice callbacks)
-- **LLM:** OpenAI gpt-4o-mini via Emergent integrations key
-- **External APIs:** Google Places API, Bland.ai voice calling
+- **Database:** MongoDB (analytics, payments, voice callbacks)
+- **LLM:** OpenAI gpt-4o-mini via Emergent integrations
+- **External APIs:** Google Places, Bland.ai, Razorpay
 
 ## Implemented Features
 
-### Phase 1 — Core MVP (Complete)
-- [x] Query Parsing via OpenAI (StructuredQuery extraction)
-- [x] Online Pipeline: Simulated e-commerce results
-- [x] Offline Pipeline: Google Places vendor discovery
-- [x] Ranking Engine: Intent-based scoring
+### Core MVP (Complete)
+- [x] Query Parsing via OpenAI
+- [x] Online Pipeline (simulated e-commerce)
+- [x] Offline Pipeline (Google Places + Bland.ai voice calls)
+- [x] Ranking Engine (cheapest/fastest/best_value/nearest)
 - [x] MongoDB Analytics
 
-### Phase 2 — Chat-first UX (Complete - April 2026)
-- [x] Conversational chat UI with user/assistant message bubbles
-- [x] LLM-powered shopping assistant collecting product, location, intent
-- [x] Auto-trigger search when enough context gathered
-- [x] Vendor list chat bubble (names + phone numbers, includes PANKTI SHAH)
-- [x] Per-vendor progress animation ("Calling/Contacting X...")
-- [x] 1-minute delay after progress before results (compiling state)
-- [x] Inline result cards with rank/price/vendor/source/delivery/availability/confidence
-- [x] Filter & sort controls, search summary timeline
+### Chat-first UX (Complete)
+- [x] Conversational chatbot collecting product, location, intent
+- [x] Vendor list bubble (names + phone numbers)
+- [x] Per-vendor progress animation
+- [x] 1-minute compiling delay before results
+- [x] Inline result cards with filter/sort
+- [x] Quick reply chips, new search/reset
 
-### Phase 3 — Hybrid 2-Call Offline Pipeline (Complete - April 2026)
-- [x] Exactly 2 real Bland.ai calls per search:
-  - Call #1: PANKTI SHAH at +919106812406 (fixed target)
-  - Call #2: Top discovered vendor from Google Places
-- [x] All other vendors use mocked results
-- [x] Sequential calls, 45s timeout per call, 5s delay between
-- [x] Graceful fallback to mock on failure/timeout/rate-limit
-- [x] Real transcript extraction (price, availability, negotiated, delivery)
-- [x] Detailed logging (start/end, transcript, extracted data, fallback)
-- [x] MOCK_VOICE_CALLS=false (real calls enabled)
-- [x] App never crashes on call failure
+### Hybrid Offline Calling (Complete)
+- [x] 1 real Bland.ai call to PANKTI SHAH (+919106812406) per search
+- [x] All discovered vendors mocked
+- [x] 45s timeout, graceful mock fallback on failure
+- [x] Transcript extraction for real calls
+
+### Razorpay Paywall (Complete - April 2026)
+- [x] Premium upgrade popup after first search results
+- [x] Rs 99 payment via Razorpay Standard Checkout (UPI, cards, netbanking)
+- [x] Backend order creation (POST /api/payments/create-order)
+- [x] Signature verification (POST /api/payments/verify)
+- [x] Payment status tracking (GET /api/payments/status/{session_id})
+- [x] MongoDB payment records (order_id, payment_id, status, timestamps)
+- [x] Premium session marking — popup not shown again after payment
+- [x] Dismiss behavior — close returns to chat normally
 
 ## Key Endpoints
-- `POST /api/chat/message` — Chat endpoint (discovered_vendors, progress_states, results)
-- `POST /api/chat/reset` — Reset chat session
-- `POST /api/search` — Legacy search endpoint
+- `POST /api/chat/message` — Main chat + search
+- `POST /api/chat/reset` — Reset session
+- `POST /api/payments/create-order` — Create Razorpay order
+- `POST /api/payments/verify` — Verify payment signature
+- `GET /api/payments/status/{session_id}` — Check premium status
 - `GET /api/health` — Health check
 
-## Known Limitations
-- Bland.ai rate limits may cause 429 errors — falls back to mock gracefully
-- Online pipeline results are simulated
-- Chat sessions in-memory (lost on restart)
-
 ## Backlog
-- P1: Persist chat sessions in MongoDB
+- P1: Persist chat sessions + premium status in MongoDB
+- P1: Fix Bland.ai 429 rate limits (real calls currently failing)
 - P2: LLM top-3 recommendation summary
-- P2: Persistent chat history
 - P3: Real e-commerce API integrations
