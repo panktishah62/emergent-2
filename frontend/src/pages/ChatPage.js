@@ -266,10 +266,10 @@ const ChatPage = () => {
   };
 
   const quickReplies = [
-    "cheapest iPhone 15 in Bangalore",
-    "tomatoes near Rajkot",
-    "laptop under 50000 in Mumbai",
-    "nearest pharmacy in Delhi"
+    "fastest delivery for AirPods Pro in Mumbai",
+    "cheapest tomatoes 1kg near Rajkot",
+    "cheapest iPhone 15 128GB in Bangalore",
+    "cheapest modular kitchen hardware in Surat"
   ];
 
   return (
