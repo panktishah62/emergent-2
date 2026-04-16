@@ -111,6 +111,14 @@ const ChatPage = () => {
         name: 'PriceHunter',
         description: 'Premium Upgrade — Unlimited Price Hunting',
         order_id: data.order_id,
+        method: {
+          upi: true,
+          card: false,
+          netbanking: false,
+          wallet: false,
+          paylater: false,
+          emi: false,
+        },
         handler: async (response) => {
           // Verify payment on backend
           try {
@@ -967,7 +975,7 @@ const PaywallModal = ({ onPay, onClose, processing }) => (
 
         {/* Trust line */}
         <p className="text-[11px]" style={{ color: 'rgba(139,163,203,0.6)', fontFamily: "'Inter', sans-serif" }}>
-          Secure payment via Razorpay. UPI, cards, and netbanking accepted.
+          Secure UPI payment via Razorpay.
         </p>
       </div>
     </motion.div>
