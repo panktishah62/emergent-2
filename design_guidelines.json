@@ -1,0 +1,101 @@
+{
+  "project_name": "PriceHunter",
+  "theme": "dark",
+  "archetype": "Archetype 7: Electric & Neon (Premium Fintech Variant)",
+  "vibe": "Cinematic, precise, terminal-like but extremely high-end. It should feel like a Bloomberg Terminal mixed with a futuristic AI sci-fi interface. Trustworthy but disruptive.",
+  "colors": {
+    "background": "#0A0F1C",
+    "surface": "#131B2F",
+    "surface_glass": "rgba(255, 255, 255, 0.03)",
+    "surface_glass_hover": "rgba(255, 255, 255, 0.06)",
+    "primary": "#00FF88",
+    "primary_glow": "rgba(0, 255, 136, 0.4)",
+    "primary_muted": "rgba(0, 255, 136, 0.1)",
+    "text_main": "#FFFFFF",
+    "text_muted": "#8BA3CB",
+    "text_disabled": "rgba(139, 163, 203, 0.5)",
+    "border_subtle": "rgba(255, 255, 255, 0.08)",
+    "border_active": "rgba(0, 255, 136, 0.3)",
+    "badge_online_bg": "rgba(0, 229, 255, 0.1)",
+    "badge_online_text": "#00E5FF",
+    "badge_offline_bg": "rgba(0, 255, 136, 0.1)",
+    "badge_offline_text": "#00FF88",
+    "badge_online_border": "rgba(0, 229, 255, 0.2)",
+    "badge_offline_border": "rgba(0, 255, 136, 0.2)"
+  },
+  "typography": {
+    "fonts_to_install": "Cabinet Grotesk (from fontshare or local), Satoshi (from fontshare or local), JetBrains Mono (Google Fonts). If Fontshare is complex, use Space Grotesk (Wait, Space Grotesk is banned. Use 'Outfit' or 'Clash Display' via Google Fonts/CDN). Let's specify: Headings -> 'Outfit' (Google Fonts), Body -> 'Inter' (Google Fonts), Data -> 'JetBrains Mono' (Google Fonts).",
+    "font_families": {
+      "headings": "'Outfit', sans-serif",
+      "body": "'Inter', sans-serif",
+      "data_numbers": "'JetBrains Mono', monospace"
+    },
+    "hierarchy": {
+      "h1": "text-5xl md:text-6xl lg:text-7xl font-light tracking-tighter",
+      "h2": "text-3xl md:text-4xl font-normal tracking-tight",
+      "h3": "text-xl md:text-2xl font-medium",
+      "body": "text-base leading-relaxed text-[#8BA3CB]",
+      "small_labels": "text-xs font-bold uppercase tracking-[0.2em] text-[#8BA3CB]",
+      "price_display": "font-['JetBrains_Mono'] text-3xl font-bold tracking-tight text-white",
+      "stats_display": "font-['JetBrains_Mono'] text-sm"
+    }
+  },
+  "layout_and_spacing": {
+    "generous_spacing": true,
+    "page_padding": "px-6 py-12 md:px-12 md:py-24",
+    "container_max_width": "max-w-6xl mx-auto",
+    "border_radius": {
+      "cards": "rounded-2xl",
+      "buttons": "rounded-full",
+      "badges": "rounded-md",
+      "inputs": "rounded-full"
+    },
+    "grid_system": "Use CSS Grid (bento-style) for results. #1 deal must span full width on mobile, and 2 columns on desktop. Other deals span 1 column."
+  },
+  "surface_strategies": {
+    "main_background": "Solid #0A0F1C with the generated glowing abstract image layered as a fixed background (opacity-20) to give depth without ruining contrast.",
+    "search_bar": "The 'Tracing Beam' look. Massive input field. Glassmorphism `bg-[#131B2F]/80 backdrop-blur-xl`. Border: `border border-[#00FF88]/30`. Inner glow on focus: `ring-1 ring-[#00FF88]/50 shadow-[0_0_30px_rgba(0,255,136,0.15)]`.",
+    "result_cards": "Glassmorphism 2.0. `bg-white/[0.02] backdrop-blur-xl border border-white/5`. Hover effect: `hover:bg-white/[0.04] hover:border-[#00FF88]/30 hover:-translate-y-1 transition-all duration-300`.",
+    "best_deal_card": "Highlight heavily. `bg-gradient-to-b from-[#00FF88]/10 to-transparent border border-[#00FF88]/40 shadow-[0_8px_32px_rgba(0,255,136,0.1)]`. Padding should be generous (p-8)."
+  },
+  "components_spec": {
+    "search_input": "Huge centered input (text-2xl md:text-4xl), placeholder text should be muted. Include an icon (Lucide Sparkles or Search) in the primary electric green color. Add an optional location input (text-base) right below it or integrated as a pill.",
+    "loading_state": "Central glowing orb or pulsing logo. Below it, a vertical terminal-like list of the 4 stages ('Understanding your query', 'Searching online platforms', 'Calling nearby vendors', 'Comparing results'). Active stage glows electric green, completed stages are muted grey, upcoming are disabled grey. Use Framer Motion for typing or glitch effects.",
+    "summary_bar": "Sticky at top or right above results. Glassmorphic pill shape. 'Found X results in Y seconds'. Use JetBrains Mono for the numbers. Include inline badges for '(Z online, W offline)'.",
+    "confidence_meter": "A minimalist horizontal progress bar inside the card. Background `bg-white/10`, fill `bg-[#00FF88]` for high confidence, or a gradient from yellow to green.",
+    "badges": "Strictly uppercase, JetBrains Mono text-xs. ONLINE: text-[#00E5FF] bg-[#00E5FF]/10 border border-[#00E5FF]/20. OFFLINE: text-[#00FF88] bg-[#00FF88]/10 border border-[#00FF88]/20. BEST DEAL: Solid #00FF88 bg, black text, with a glowing shadow."
+  },
+  "motion_and_interactions": {
+    "page_load": "Fade in and slide up (y: 20 -> 0) using Framer Motion.",
+    "cards_stagger": "List container `variants` with staggerChildren: 0.1. Cards scale up slightly (0.95 -> 1) and fade in.",
+    "hover_states": "All interactive elements must change border color and have a subtle scale (1.02) or translateY (-2px). Text color must remain highly accessible.",
+    "buttons": "Primary CTA uses solid #00FF88 background, text-[#0A0F1C] (black/dark navy text for maximum contrast). Hover: `bg-white`."
+  },
+  "accessibility_and_testing": {
+    "contrast": "Ensure white text on #0A0F1C meets APCA/WCAG standards. Do not use pure transparent backgrounds under text. Use text-shadow if placed directly over images.",
+    "test_ids": "All interactive elements MUST include `data-testid` (e.g., `search-input`, `search-submit-button`, `result-card-0`, `location-input`)."
+  },
+  "media": {
+    "images": [
+      {
+        "category": "hero_background",
+        "url": "https://static.prod-images.emergentagent.com/jobs/134413b3-51ad-4d7d-a9b8-f9d83c3de800/images/1d48159cb851139e8c5199bc398b36f17dae57cf0e259fc187babd56058a8642.png",
+        "description": "Cinematic dark navy blue with electric green abstract mesh lighting. Use as an absolute positioned, fixed background for the landing page with opacity-20 or opacity-30. Set pointer-events-none."
+      },
+      {
+        "category": "results_background",
+        "url": "https://static.prod-images.emergentagent.com/jobs/134413b3-51ad-4d7d-a9b8-f9d83c3de800/images/e3f50c20c28c79f30a796f23979ccd6419c87951a81abb512be8c39ee95eed75.png",
+        "description": "Geometric glass panels in dark space. Can be used for the results page background (opacity-10) or left out if UI becomes too cluttered."
+      }
+    ],
+    "icons": "Use 'lucide-react'. Import specific icons like Sparkles, Search, MapPin, Clock, ShieldCheck (for confidence), TrendingUp."
+  },
+  "instructions_to_main_agent": [
+    "Install and use framer-motion for the 4-stage loading animation.",
+    "Use standard Tailwind CSS classes. Do not rely heavily on Shadcn 'Cards' if they restrict the glassmorphism aesthetic—build custom HTML/Tailwind cards for the results.",
+    "Include Google Fonts 'Outfit', 'Inter', and 'JetBrains Mono' in your index.html.",
+    "For the loading state, simulate a delay (e.g., 1.5 seconds per stage) to show the user the pipeline sequence (Understanding -> Searching -> Calling -> Comparing).",
+    "Use mock data that includes random vendor names (e.g., 'Amazon India', 'Local Vendor: Sharma Stores', 'Blinkit').",
+    "Ensure the Best Deal card (#1) uses the 'best_deal_card' styling and stands out aggressively from the rest."
+  ]
+}
